@@ -34,7 +34,7 @@ public:
     // All chains as XML (for the settings file or a snapshot), and back.
     void save();                      // into the settings, now
     void restore();                   // from the settings, at start-up
-    void writeTo (juce::PropertySet&) const;
+    void writeTo (juce::PropertySet&, bool withStates = true) const;
     void restoreFrom (const juce::PropertySet&, bool removeCurrentFirst);
     void removeAll();
     bool isLoading() const noexcept   { return pendingLoads > 0; }

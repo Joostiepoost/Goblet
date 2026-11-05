@@ -213,7 +213,7 @@ void PluginChain::setNonRealtime (bool offline)
             s.processor->setNonRealtime (offline);
 }
 
-std::unique_ptr<juce::XmlElement> PluginChain::createXml (const juce::String& tag) const
+std::unique_ptr<juce::XmlElement> PluginChain::createXml (const juce::String& tag, bool withState) const
 {
     auto xml = std::make_unique<juce::XmlElement> (tag);
 
@@ -228,9 +228,12 @@ std::unique_ptr<juce::XmlElement> PluginChain::createXml (const juce::String& ta
         e->setAttribute ("bypass", s.bypass.load());
         if (auto desc = plugin->getPluginDescription().createXml())
             e->addChildElement (desc.release());
-        juce::MemoryBlock state;
-        plugin->getStateInformation (state);
-        e->setAttribute ("state", state.toBase64Encoding());
+        if (withState)
+        {
+            juce::MemoryBlock state;
+            plugin->getStateInformation (state);
+            e->setAttribute ("state", state.toBase64Encoding());
+        }
     }
 
     return xml;

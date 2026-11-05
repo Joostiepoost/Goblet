@@ -285,13 +285,13 @@ void PluginHost::removePlugin (int chain, int slot)
 }
 
 //==============================================================================
-void PluginHost::writeTo (juce::PropertySet& s) const
+void PluginHost::writeTo (juce::PropertySet& s, bool withStates) const
 {
     juce::XmlElement xml ("PLUGINS");
     for (int c = 0; c < Mixer::numChains; ++c)
         if (mixer.chain (c).numPlugins() > 0)
         {
-            auto e = mixer.chain (c).createXml ("CHAIN");
+            auto e = mixer.chain (c).createXml ("CHAIN", withStates);
             e->setAttribute ("id", c);
             xml.addChildElement (e.release());
         }

@@ -25,8 +25,19 @@ public:
 
     void systemRequestedQuit() override
     {
+        // Unsaved changes to the project: ask first (Save / Don't save / Cancel).
+        if (auto* mc = mainWindow != nullptr ? dynamic_cast<MainComponent*> (mainWindow->getContentComponent()) : nullptr)
+        {
+            if (quitting) return;
+            quitting = true;
+            mc->askToSaveThen ([] { juce::JUCEApplication::getInstance()->quit(); });
+            juce::MessageManager::callAsync ([this] { quitting = false; });
+            return;
+        }
         quit();
     }
+
+    bool quitting = false;
 
 private:
     class MainWindow : public juce::DocumentWindow

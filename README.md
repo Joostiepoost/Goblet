@@ -42,8 +42,26 @@ Other options:
 | 4 | Trims and faders (+12 dB headroom), MIDI: mapping window, smoothing, Jump/Pickup, reversed ranges, 14-bit switch | done |
 | 5 | Live capture: sum and stems, tail, captures panel, snapshots | done |
 | 6 | Gesture re-render: replay a take offline at Render quality | testing |
+| 7 | Project files: save and open a starting setup anywhere; New, Open recent, unsaved changes | testing |
 
 The full design is in the Goblet project proposal.
+
+## Using step 7: project files
+
+- **File menu** (in the Mac menu bar):
+  - **New project** (Cmd-N): an empty setup: no files, no plugins, trims and faders at 0 dB, mute and solo off. MIDI mappings to faders and trims stay (they belong to your controller); mappings to plugin parameters go.
+  - **Open project...** (Cmd-O), **Open recent**.
+  - **Save** (Cmd-S), **Save as...** (Shift-Cmd-S): anywhere you like, for example beside the sound files of a piece. The captures stay in Music/Goblet Captures.
+- **A project** (`.goblet`, readable XML) holds the starting setup: per deck the sound file, in and out points, loop, reverse, crossfade, trim, fader, mute and solo; every plugin with its settings and bypass; the MIDI mappings. The sound files are never changed.
+- **Moving a project**: each sound file is kept by its full path and by its path from the project's folder, so a folder moved or copied as a whole (project and sounds together) still finds them.
+- **Unsaved changes**: the window title shows `Goblet - <project> *`. New, Open, Open recent and Quit ask first: Save, Don't save or Cancel. Changes made only inside a plugin's own window are saved with the project, but don't set the `*`. Fader and trim moves do, also from MIDI, so after a live session Quit asks whether to keep the new positions as the project's starting setup.
+- Takes are named after the project (`<project> <date> <time>`). A take's snapshot has the same format as a project: Restore snapshot puts it into the current project (save to keep it), and Open project can open a snapshot directly (it opens untitled, so saving asks where, and the captures folder keeps only takes).
+- Between launches Goblet still remembers everything by itself, also before a first save, and reopens with the last project.
+
+**Worth testing**:
+- Save a setup with plugins in a folder with its sound files, quit, move the folder, reopen the project.
+- The `*` after a change, and the Save / Don't save / Cancel question on quit.
+- New, then Open recent.
 
 ## Using step 6: re-render
 

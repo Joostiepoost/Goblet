@@ -1,6 +1,6 @@
 # Goblet deck player: measurements (step 1)
 
-Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 3:26:32pm.
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 3:52:57pm.
 
 ## Passthrough at equal rates
 
@@ -115,8 +115,8 @@ Time for one deck to produce 1 s of stereo output, as a share of one core of thi
 
 | Preset | 48.0 on 48.0 kHz (×1.000) | 44.1 on 48.0 kHz (×0.919) | 48.0 on 44.1 kHz (×1.088) | 44.1 on 96.0 kHz (×0.459) | 48.0 on 96.0 kHz (×0.500) | 96.0 on 48.0 kHz (×2.000) | 96.0 on 44.1 kHz (×2.177) | 192.0 on 48.0 kHz (×4.000) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| High | 0.0% | 1.4% | 4.1% | 2.7% | 2.7% | 8.1% | 8.1% | 16.2% |
-| Very high | 0.0% | 2.5% | 8.0% | 5.4% | 4.8% | 14.8% | 15.2% | 30.8% |
-| Max | 0.0% | 3.6% | 10.6% | 6.7% | 6.9% | 22.7% | 23.8% | 44.0% |
-| Render | 0.0% | 5.4% | 16.3% | 10.4% | 10.0% | 32.5% | 32.3% | 66.3% |
+| High | 0.1% | 2.2% | 6.0% | 3.0% | 2.6% | 8.0% | 8.0% | 16.5% |
+| Very high | 0.0% | 2.5% | 7.9% | 5.0% | 4.7% | 15.2% | 16.9% | 31.9% |
+| Max | 0.0% | 3.5% | 10.8% | 7.6% | 6.7% | 21.6% | 21.7% | 42.6% |
+| Render | 0.0% | 5.8% | 16.3% | 10.6% | 9.8% | 32.5% | 32.3% | 66.3% |
 

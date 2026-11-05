@@ -59,7 +59,7 @@ public:
 
     // Layout with every plugin's description, state and bypass (for saving);
     // plugins are loaded back by the caller.
-    std::unique_ptr<juce::XmlElement> createXml (const juce::String& tag) const;
+    std::unique_ptr<juce::XmlElement> createXml (const juce::String& tag, bool withState = true) const;
 
     //== Audio thread (MIDI) =================================================
     // A plugin parameter, normalised 0..1. They take the chain's lock only if it

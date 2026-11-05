@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 6: the re-render.
+// MainComponent.cpp — step 7: project files.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -125,6 +125,16 @@ MainComponent::MainComponent()
 
     loadSettings();
     pluginHost.restore();
+
+    // The project: its file, and the state it was last saved in.
+    recentProjects.restoreFromString (settings->getValue ("recentProjects"));
+    projectFile = juce::File (settings->getValue ("projectFile"));
+    if (! projectFile.existsAsFile()) projectFile = juce::File();
+    savedHash = settings->getValue ("savedHash");
+    if (! settings->containsKey ("savedHash")) hashPending = true;   // first launch: nothing to save yet
+   #if JUCE_MAC
+    juce::MenuBarModel::setMacMainMenu (this);
+   #endif
     if (err.isNotEmpty()) setStatus ("Audio: " + err);
 
     setWantsKeyboardFocus (true);
@@ -134,6 +144,9 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+   #if JUCE_MAC
+    juce::MenuBarModel::setMacMainMenu (nullptr);
+   #endif
     if (recorder.isActive()) recorder.cut();
     renderer = nullptr;
     capturesPanel = nullptr;
@@ -248,6 +261,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         }
     }
 
+    const auto cmd = juce::ModifierKeys::commandModifier, shift = juce::ModifierKeys::shiftModifier;
+    if (key == juce::KeyPress ('n', cmd, 0))         { askToSaveThen ([this] { newProject(); }); return true; }
+    if (key == juce::KeyPress ('o', cmd, 0))         { openProjectDialog(); return true; }
+    if (key == juce::KeyPress ('s', cmd, 0))         { saveProject(); return true; }
+    if (key == juce::KeyPress ('s', cmd | shift, 0)) { saveProjectAs(); return true; }
+
     if (key == juce::KeyPress ('m', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
     {
         showMidiWindow();
@@ -318,7 +337,7 @@ void MainComponent::readSession (const juce::PropertySet& s, bool replacePlugins
         pluginHost.restoreFrom (s, true);
 }
 
-void MainComponent::writeSession (juce::PropertySet& s)
+void MainComponent::writeSession (juce::PropertySet& s, bool withPluginStates)
 {
     s.setValue ("quality", qualityBox.getSelectedId() - 1);
     for (auto& d : decks)
@@ -326,13 +345,257 @@ void MainComponent::writeSession (juce::PropertySet& s)
     if (auto xml = midiMappings.createXml())
         s.setValue ("midiMappings", xml.get());
     if (! pluginHost.isLoading())
-        pluginHost.writeTo (s);
+        pluginHost.writeTo (s, withPluginStates);
 }
 
 void MainComponent::saveSettings()
 {
-    writeSession (*properties.getUserSettings());
+    auto& s = *properties.getUserSettings();
+    writeSession (s);
+    s.setValue ("projectFile", projectFile.getFullPathName());
+    s.setValue ("savedHash", savedHash);
+    s.setValue ("recentProjects", recentProjects.toString());
     properties.saveIfNeeded();
+}
+
+//==============================================================================
+// Projects
+
+juce::String MainComponent::projectName() const
+{
+    return projectFile != juce::File() ? projectFile.getFileNameWithoutExtension() : juce::String ("Untitled");
+}
+
+juce::String MainComponent::sessionHash()
+{
+    // Everything but the plugins' state blobs (some plugins write a different one every time).
+    juce::PropertySet s;
+    writeSession (s, false);
+    s.removeValue ("quality");      // a working setting, not part of the setup
+    return juce::String (s.createXml ("S")->toString().hashCode64());
+}
+
+void MainComponent::markSaved()
+{
+    if (pluginHost.isLoading()) { hashPending = true; return; }
+    savedHash = currentHash = sessionHash();
+    hashPending = false;
+    updateTitle();
+}
+
+void MainComponent::updateTitle()
+{
+    const auto title = "Goblet - " + projectName() + (isDirty() ? " *" : "");
+    if (title == lastTitle) return;
+    lastTitle = title;
+    if (auto* w = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent()))
+        w->setName (title);
+}
+
+void MainComponent::setProjectFile (const juce::File& f)
+{
+    projectFile = f;
+    if (f != juce::File())
+    {
+        recentProjects.addFile (f);
+        recentProjects.removeNonExistentFiles();
+    }
+    menuItemsChanged();
+}
+
+bool MainComponent::writeProjectFile (const juce::File& file, juce::String& error)
+{
+    juce::PropertySet s;
+    writeSession (s);
+
+    // Each sound file also by its path from the project's folder, so a folder moved
+    // or copied as a whole (project and sounds together) still finds them.
+    for (int i = 0; i < Mixer::numDecks; ++i)
+    {
+        const auto key = "deck" + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + ".";
+        const juce::File sound (s.getValue (key + "file"));
+        if (sound != juce::File())
+            s.setValue (key + "fileRelative", sound.getRelativePathFrom (file.getParentDirectory()));
+    }
+
+    auto xml = s.createXml ("GOBLET_PROJECT");
+    if (xml == nullptr || ! xml->writeTo (file)) { error = "Cannot write " + file.getFullPathName(); return false; }
+    return true;
+}
+
+bool MainComponent::readProjectFile (const juce::File& file, juce::String& error)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr) { error = "Cannot read " + file.getFileName(); return false; }
+    juce::PropertySet s;
+    s.restoreFromXml (*xml);
+
+    juce::StringArray missing;
+    for (int i = 0; i < Mixer::numDecks; ++i)
+    {
+        const auto key = "deck" + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + ".";
+        const juce::File sound (s.getValue (key + "file"));
+        if (sound == juce::File() || sound.existsAsFile()) continue;
+        const auto rel = s.getValue (key + "fileRelative");
+        const auto moved = rel.isNotEmpty() ? file.getParentDirectory().getChildFile (rel) : juce::File();
+        if (moved.existsAsFile()) s.setValue (key + "file", moved.getFullPathName());
+        else missing.add (sound.getFileName());
+    }
+
+    mixer.stopAll();
+    readSession (s, true);
+    if (! missing.isEmpty())
+        error = "Not found: " + missing.joinIntoString (", ") + ".";
+    return true;
+}
+
+void MainComponent::newProject()
+{
+    // An empty setup: no files, no plugins, trims and faders at 0 dB. The MIDI mappings
+    // to faders and trims stay (they belong to the controller); those to plugins go.
+    juce::PropertySet s;
+    for (int i = 0; i < Mixer::numDecks; ++i)
+        s.setValue ("deck" + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + ".file", juce::String());
+    s.setValue ("quality", qualityBox.getSelectedId() - 1);
+    if (auto xml = midiMappings.createXml())
+    {
+        for (int i = xml->getNumChildElements(); --i >= 0;)
+            if (xml->getChildElement (i)->getIntAttribute ("kind") == (int) MidiTarget::Kind::plugin)
+                xml->removeChildElement (xml->getChildElement (i), true);
+        s.setValue ("midiMappings", xml.get());
+    }
+
+    mixer.stopAll();
+    readSession (s, true);
+    setProjectFile ({});
+    markSaved();
+    saveSettings();
+    setStatus ("New project.");
+}
+
+void MainComponent::openProjectDialog()
+{
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    askToSaveThen ([safeThis]
+    {
+        if (safeThis == nullptr) return;
+        auto start = safeThis->projectFile != juce::File() ? safeThis->projectFile.getParentDirectory()
+                                                           : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        safeThis->projectChooser = std::make_unique<juce::FileChooser> ("Open a Goblet project", start, "*.goblet");
+        safeThis->projectChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                               [safeThis] (const juce::FileChooser& fc)
+                                               {
+                                                   if (safeThis != nullptr && fc.getResult().existsAsFile())
+                                                       safeThis->openProject (fc.getResult());
+                                               });
+    });
+}
+
+void MainComponent::openProject (const juce::File& file)
+{
+    juce::String error;
+    if (! readProjectFile (file, error) && error.isNotEmpty()) { setStatus (error); return; }
+
+    // A take's snapshot opens too (it has the same format), but stays untitled: saving
+    // it asks where, so the captures folder keeps only takes.
+    const bool isSnapshot = file.isAChildOf (capturesFolder());
+    setProjectFile (isSnapshot ? juce::File() : file);
+    markSaved();
+    saveSettings();
+    setStatus ((isSnapshot ? "Opened the snapshot " : "Opened ") + file.getFileNameWithoutExtension() + "."
+               + (error.isNotEmpty() ? " " + error : juce::String()));
+}
+
+void MainComponent::saveProject (std::function<void (bool)> done)
+{
+    if (projectFile == juce::File()) { saveProjectAs (std::move (done)); return; }
+    juce::String error;
+    const bool ok = writeProjectFile (projectFile, error);
+    if (ok)
+    {
+        setProjectFile (projectFile);
+        markSaved();
+        saveSettings();
+        setStatus ("Saved " + projectFile.getFileName() + ".");
+    }
+    else setStatus (error);
+    if (done) done (ok);
+}
+
+void MainComponent::saveProjectAs (std::function<void (bool)> done)
+{
+    auto start = projectFile != juce::File() ? projectFile
+                                             : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Untitled.goblet");
+    projectChooser = std::make_unique<juce::FileChooser> ("Save the Goblet project", start, "*.goblet");
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    projectChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                     | juce::FileBrowserComponent::warnAboutOverwriting,
+                                 [safeThis, done] (const juce::FileChooser& fc)
+                                 {
+                                     if (safeThis == nullptr) return;
+                                     auto f = fc.getResult();
+                                     if (f == juce::File()) { if (done) done (false); return; }
+                                     f = f.withFileExtension (".goblet");
+                                     safeThis->projectFile = f;
+                                     safeThis->saveProject (done);
+                                 });
+}
+
+void MainComponent::askToSaveThen (std::function<void()> next)
+{
+    currentHash = pluginHost.isLoading() ? currentHash : sessionHash();
+    if (! isDirty()) { next(); return; }
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    juce::AlertWindow::showYesNoCancelBox (juce::MessageBoxIconType::QuestionIcon, "Save changes?",
+                                           "Do you want to save the changes to " + projectName() + "?",
+                                           "Save", "Don't save", "Cancel", this,
+                                           juce::ModalCallbackFunction::create ([safeThis, next] (int result)
+    {
+        if (safeThis == nullptr) return;
+        if (result == 1)      safeThis->saveProject ([next] (bool ok) { if (ok) next(); });
+        else if (result == 2) next();
+    }));
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "File" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex (int, const juce::String&)
+{
+    juce::PopupMenu m;
+    auto item = [&m] (int id, const juce::String& text, const juce::String& keys)
+    {
+        juce::PopupMenu::Item i (text);
+        i.itemID = id;
+        i.shortcutKeyDescription = keys;
+        m.addItem (i);
+    };
+    const auto cmdKey = juce::String::fromUTF8 ("\xe2\x8c\x98"), shiftKey = juce::String::fromUTF8 ("\xe2\x87\xa7");
+    item (menuNew, "New project", cmdKey + "N");
+    item (menuOpen, "Open project...", cmdKey + "O");
+    juce::PopupMenu recent;
+    recentProjects.createPopupMenuItems (recent, menuRecentBase, true, true);
+    m.addSubMenu ("Open recent", recent, recent.getNumItems() > 0);
+    m.addSeparator();
+    item (menuSave, "Save", cmdKey + "S");
+    item (menuSaveAs, "Save as...", shiftKey + cmdKey + "S");
+    return m;
+}
+
+void MainComponent::menuItemSelected (int id, int)
+{
+    if (id == menuNew)        askToSaveThen ([this] { newProject(); });
+    else if (id == menuOpen)  openProjectDialog();
+    else if (id == menuSave)  saveProject();
+    else if (id == menuSaveAs) saveProjectAs();
+    else if (id >= menuRecentBase)
+    {
+        const auto f = recentProjects.getFile (id - menuRecentBase);
+        askToSaveThen ([this, f] { if (f.existsAsFile()) openProject (f); });
+    }
 }
 
 //==============================================================================
@@ -350,9 +613,10 @@ void MainComponent::toggleRecord()
     const auto folder = capturesFolder();
     folder.createDirectory();
     const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H%M%S");
-    auto file = folder.getChildFile ("Goblet " + stamp + ".wav");
+    const auto prefix = projectFile != juce::File() ? projectName() : juce::String ("Goblet");
+    auto file = folder.getChildFile (prefix + " " + stamp + ".wav");
     for (int n = 2; file.exists(); ++n)
-        file = folder.getChildFile ("Goblet " + stamp + " " + juce::String (n) + ".wav");
+        file = folder.getChildFile (prefix + " " + stamp + " " + juce::String (n) + ".wav");
 
     std::array<bool, Mixer::numDecks> stems {};
     for (int i = 0; i < Mixer::numDecks; ++i)
@@ -422,7 +686,8 @@ void MainComponent::restoreSnapshot (const juce::File& snapshot)
         safeThis->mixer.stopAll();
         safeThis->readSession (set, true);
         safeThis->saveSettings();
-        safeThis->setStatus ("Restored the session of " + snapshot.getFileNameWithoutExtension() + ".");
+        safeThis->setStatus ("Restored the session of " + snapshot.getFileNameWithoutExtension() + "."
+                             + (safeThis->projectFile != juce::File() ? " Save (Cmd-S) to keep it in " + safeThis->projectName() + "." : juce::String()));
     });
 }
 
@@ -494,6 +759,14 @@ void MainComponent::timerCallback()
             }
         }
         statusLabel.setText (s, juce::dontSendNotification);
+    }
+
+    // Unsaved changes: the window title shows "*".
+    if (tick % 30 == 15 && ! pluginHost.isLoading())
+    {
+        if (hashPending) markSaved();
+        currentHash = sessionHash();
+        updateTitle();
     }
 
     // Plugin latencies can change at any time (some plugins change theirs with a setting).

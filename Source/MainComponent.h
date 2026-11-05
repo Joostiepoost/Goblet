@@ -21,6 +21,7 @@
 #include "UI/TakeRenderer.h"
 
 class MainComponent : public juce::Component,
+                      public juce::MenuBarModel,
                       private juce::Timer,
                       private juce::ChangeListener
 {
@@ -31,6 +32,14 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+
+    // The File menu (step 7: projects).
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex (int menuIndex, const juce::String& menuName) override;
+    void menuItemSelected (int menuItemID, int) override;
+
+    /** Asks to save unsaved changes (Save / Don't save / Cancel), then runs `next` unless cancelled. */
+    void askToSaveThen (std::function<void()> next);
 
 
 private:
@@ -43,12 +52,34 @@ private:
     void loadSettings();
     void saveSettings();
     // The session: the same keys go to the settings (kept between launches) and to a take's snapshot.
-    void writeSession (juce::PropertySet&);
+    void writeSession (juce::PropertySet&, bool withPluginStates = true);
     void readSession (const juce::PropertySet&, bool replacePlugins);
     void toggleRecord();
     void captureFinished (const juce::File&);
     void restoreSnapshot (const juce::File&);
     juce::File capturesFolder() const;
+
+    // Projects (step 7): a starting setup saved anywhere, in the same format as a take's snapshot.
+    void newProject();
+    void openProjectDialog();
+    void openProject (const juce::File&);
+    void saveProject (std::function<void (bool saved)> done = {});
+    void saveProjectAs (std::function<void (bool saved)> done = {});
+    bool writeProjectFile (const juce::File&, juce::String& error);
+    bool readProjectFile (const juce::File&, juce::String& error);
+    void setProjectFile (const juce::File&);
+    juce::String projectName() const;
+    juce::String sessionHash();
+    void markSaved();
+    void updateTitle();
+
+    juce::File projectFile;
+    juce::String savedHash, currentHash, lastTitle;
+    bool hashPending = false;      // the saved state is taken once the plugins have loaded
+    juce::RecentlyOpenedFilesList recentProjects;
+    std::unique_ptr<juce::FileChooser> projectChooser;
+    bool isDirty() const           { return currentHash != savedHash; }
+    enum MenuIDs { menuNew = 1, menuOpen, menuSave, menuSaveAs, menuRecentBase = 100 };
     void setStatus (const juce::String&);
     void showMidiWindow();
     void applyMidiInputs();
