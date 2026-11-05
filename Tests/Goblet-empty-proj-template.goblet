@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<GOBLET_PROJECT>
+  <VALUE name="quality" val="3"/>
+  <VALUE name="deckA.file" val=""/>
+  <VALUE name="deckA.in" val="0"/>
+  <VALUE name="deckA.out" val="0"/>
+  <VALUE name="deckA.loop" val="1"/>
+  <VALUE name="deckA.reverse" val="0"/>
+  <VALUE name="deckA.mute" val="0"/>
+  <VALUE name="deckA.trim" val="1.332267629550188e-15"/>
+  <VALUE name="deckA.fader" val="0.0236220471560955"/>
+  <VALUE name="deckA.solo" val="0"/>
+  <VALUE name="deckA.fadeMs" val="10.0"/>
+  <VALUE name="deckA.fadeShape" val="0"/>
+  <VALUE name="deckA.fadeTension" val="0.5"/>
+  <VALUE name="deckB.file" val=""/>
+  <VALUE name="deckB.in" val="0"/>
+  <VALUE name="deckB.out" val="0"/>
+  <VALUE name="deckB.loop" val="1"/>
+  <VALUE name="deckB.reverse" val="0"/>
+  <VALUE name="deckB.mute" val="0"/>
+  <VALUE name="deckB.trim" val="1.332267629550188e-15"/>
+  <VALUE name="deckB.fader" val="0.03149606287479401"/>
+  <VALUE name="deckB.solo" val="0"/>
+  <VALUE name="deckB.fadeMs" val="10.0"/>
+  <VALUE name="deckB.fadeShape" val="0"/>
+  <VALUE name="deckB.fadeTension" val="0.5"/>
+  <VALUE name="deckC.file" val=""/>
+  <VALUE name="deckC.in" val="0"/>
+  <VALUE name="deckC.out" val="0"/>
+  <VALUE name="deckC.loop" val="1"/>
+  <VALUE name="deckC.reverse" val="0"/>
+  <VALUE name="deckC.mute" val="0"/>
+  <VALUE name="deckC.trim" val="1.332267629550188e-15"/>
+  <VALUE name="deckC.fader" val="0.5039370059967041"/>
+  <VALUE name="deckC.solo" val="0"/>
+  <VALUE name="deckC.fadeMs" val="10.0"/>
+  <VALUE name="deckC.fadeShape" val="0"/>
+  <VALUE name="deckC.fadeTension" val="0.5"/>
+  <VALUE name="midiMappings" val="&lt;MAPPINGS&gt;&lt;MAPPING enabled=&quot;1&quot; channel=&quot;0&quot; cc=&quot;1&quot; fine=&quot;0&quot; inMin=&quot;0.0&quot; inMax=&quot;1.0&quot; outMin=&quot;0.0&quot; outMax=&quot;1.0&quot; curve=&quot;0&quot; smoothMs=&quot;20.0&quot; pickup=&quot;1&quot; kind=&quot;1&quot; deck=&quot;0&quot; chain=&quot;0&quot; slot=&quot;0&quot; index=&quot;-1&quot; name=&quot;Fader A&quot;/&gt;&lt;MAPPING enabled=&quot;1&quot; channel=&quot;0&quot; cc=&quot;21&quot; fine=&quot;0&quot; inMin=&quot;0.0&quot; inMax=&quot;1.0&quot; outMin=&quot;0.0&quot; outMax=&quot;1.0&quot; curve=&quot;0&quot; smoothMs=&quot;20.0&quot; pickup=&quot;1&quot; kind=&quot;1&quot; deck=&quot;1&quot; chain=&quot;0&quot; slot=&quot;0&quot; index=&quot;-1&quot; name=&quot;Fader B&quot;/&gt;&lt;MAPPING enabled=&quot;0&quot; channel=&quot;0&quot; cc=&quot;2&quot; fine=&quot;0&quot; inMin=&quot;0.0&quot; inMax=&quot;1.0&quot; outMin=&quot;0.0&quot; outMax=&quot;1.0&quot; curve=&quot;0&quot; smoothMs=&quot;20.0&quot; pickup=&quot;0&quot; kind=&quot;1&quot; deck=&quot;2&quot; chain=&quot;0&quot; slot=&quot;0&quot; index=&quot;-1&quot; name=&quot;Fader C&quot;/&gt;&lt;/MAPPINGS&gt;"/>
+  <VALUE name="plugins" val="&lt;PLUGINS/&gt;"/>
+</GOBLET_PROJECT>
