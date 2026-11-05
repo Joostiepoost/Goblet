@@ -8,6 +8,7 @@
 
 #include <JuceHeader.h>
 #include "../Engine/Mixer.h"
+#include "PluginHost.h"
 
 namespace goblet
 {
@@ -34,14 +35,15 @@ private:
     bool dimmed = false;
 };
 
-// The mixer column: one strip per deck (meter, peak readout) and, for now,
-// placeholders for the faders and plugin slots of steps 3 and 4.
+// The mixer column: one strip per deck (meter, peak readout, the two slots
+// after the fader), and the sum's two slots. The faders arrive in step 4.
 class MixerPanel : public juce::Component
 {
 public:
-    explicit MixerPanel (Mixer& m);
+    MixerPanel (Mixer& m, PluginHost& host);
 
     void refresh();      // from MainComponent's timer
+    void refreshSlots(); // a plugin was loaded, removed or bypassed
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -50,7 +52,8 @@ private:
     Mixer& mixer;
     std::unique_ptr<PeakMeter> meters[Mixer::numDecks];
     juce::Label peakLabels[Mixer::numDecks];
-    juce::Rectangle<int> stripAreas[Mixer::numDecks], slotsArea, sumArea;
+    std::unique_ptr<SlotButton> postSlots[Mixer::numDecks][slotsPerChain], sumSlots[slotsPerChain];
+    juce::Rectangle<int> stripAreas[Mixer::numDecks], faderNote, postCaption, sumArea;
     bool audible[Mixer::numDecks] = { true, true, true };
 };
 

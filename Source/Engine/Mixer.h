@@ -1,17 +1,24 @@
 // Mixer.h — the audio callback: three decks summed to the stereo output.
 //
-// Step 2: per deck, mute and solo (with 5 ms gain ramps, so neither clicks)
-// and a peak meter; on the sum, a peak meter and a clip lamp. The plugin
-// slots and faders arrive in steps 3 and 4 (see the proposal).
+// Signal per deck:
+//   player -> pre-fader slots -> (fader, step 4) -> post-fader slots -> meter
+//          -> latency alignment -> mute/solo -> sum
+// and on the sum:  sum slots -> meter, clip lamp -> output
 //
-// Signal per deck:  player -> meter -> mute/solo -> sum
-// The deck meters read before mute and solo, so a muted deck still shows
-// that it is playing and how loud it will be when it comes in.
+// * Mute and solo ramp over 5 ms, so neither clicks.
+// * The deck meters read before mute and solo, so a muted deck still shows
+//   that it is playing and how loud it will be when it comes in.
+// * Latency alignment: each deck is delayed by the difference between its
+//   plugins' latency and the slowest deck's, so the decks stay sample-aligned
+//   in the sum whatever plugins they hold.
+// * The Mixer is the plugins' host playhead: "playing" while any deck plays,
+//   with the time counted from the last Play all.
 
 #pragma once
 
 #include <JuceHeader.h>
 #include "DeckPlayer.h"
+#include "PluginChain.h"
 
 #include <array>
 #include <atomic>
@@ -19,12 +26,28 @@
 namespace goblet
 {
 
-class Mixer : public juce::AudioIODeviceCallback
+class Mixer : public juce::AudioIODeviceCallback,
+              public juce::AudioPlayHead
 {
 public:
     static constexpr int numDecks = 3;
 
-    Mixer() = default;
+    // The seven plugin chains: 0-2 before each deck's fader, 3-5 after it, 6 on the sum.
+    static constexpr int numChains = 2 * numDecks + 1;
+    static constexpr int preChain (int deck) noexcept     { return deck; }
+    static constexpr int postChain (int deck) noexcept    { return numDecks + deck; }
+    static constexpr int sumChain = 2 * numDecks;
+
+    Mixer();
+    ~Mixer() override;
+
+    PluginChain& chain (int id) noexcept                  { return *chains[(size_t) id]; }
+    const PluginChain& chain (int id) const noexcept      { return *chains[(size_t) id]; }
+
+    // Latencies in samples, as of the last processed block (any thread).
+    int getDeckLatency (int deck) const noexcept          { return chain (preChain (deck)).getProcessedLatency() + chain (postChain (deck)).getProcessedLatency(); }
+    int getAlignedLatency() const noexcept;               // the slowest deck: what every deck is delayed to
+    int getTotalLatency() const noexcept                  { return getAlignedLatency() + chain (sumChain).getProcessedLatency(); }
 
     DeckPlayer& deck (int index) noexcept                 { return decks[(size_t) index]; }
     const DeckPlayer& deck (int index) const noexcept     { return decks[(size_t) index]; }
@@ -67,6 +90,9 @@ public:
     void audioDeviceAboutToStart (juce::AudioIODevice*) override;
     void audioDeviceStopped() override {}
 
+    // juce::AudioPlayHead
+    juce::Optional<PositionInfo> getPosition() const override;
+
     static constexpr double muteRampMs = 5.0;
 
 private:
@@ -82,10 +108,14 @@ private:
         std::array<std::atomic<float>, 2> peak {};
         float gain = 1.0f;                     // audio thread: the current mute/solo gain
         juce::AudioBuffer<float> buffer;       // audio thread: the deck's output for this block
+        AlignDelay align;
     };
 
     std::array<DeckPlayer, numDecks> decks;
     std::array<Strip, numDecks> strips;
+    std::array<std::unique_ptr<PluginChain>, numChains> chains;
+    std::atomic<bool> headPlaying { false };
+    std::atomic<juce::int64> headSamples { 0 };
     std::atomic<int> quality { (int) Quality::Max };
     std::atomic<uint32_t> playAllCounter { 0 }, stopAllCounter { 0 };
     uint32_t lastPlayAll = 0, lastStopAll = 0;

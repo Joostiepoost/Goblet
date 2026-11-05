@@ -11,6 +11,8 @@
 // 4. Start, stop and play-once: the same measure for the declick ramps.
 // 5. Play all: two decks started together stay sample-aligned.
 //    Mute and solo: who is heard, and the 5 ms ramps don't click.
+// 5c. Plugin latency: decks with different plugin latencies stay aligned in
+//    the sum; bypassing a plugin neither clicks nor shifts the timing.
 // 6. CPU: time to produce 1 s of stereo output per deck, per preset, at the
 //    rate ratios that occur in practice.
 
@@ -29,6 +31,54 @@ using namespace goblet;
 namespace
 {
 constexpr double pi = 3.14159265358979323846;
+
+// A stand-in plugin: delays the signal by `latency` samples, reports that
+// latency, and multiplies by `gain`.
+class DelayPlugin : public juce::AudioProcessor
+{
+public:
+    DelayPlugin (int latencySamples, float g)
+        : AudioProcessor (BusesProperties().withInput ("In", juce::AudioChannelSet::stereo()).withOutput ("Out", juce::AudioChannelSet::stereo())),
+          latency (latencySamples), gain (g)
+    {
+        setLatencySamples (latency);
+    }
+
+    const juce::String getName() const override             { return "Test delay"; }
+    void prepareToPlay (double, int) override               { line.assign (2 * (size_t) (latency + 1), 0.0f); pos = 0; }
+    void releaseResources() override                        {}
+    void processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&) override
+    {
+        const int len = latency + 1;
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                line[(size_t) (ch * len + pos)] = b.getSample (ch, i);
+                b.setSample (ch, i, gain * line[(size_t) (ch * len + (pos + 1) % len)]);
+            }
+            pos = (pos + 1) % len;
+        }
+    }
+    double getTailLengthSeconds() const override            { return 0.0; }
+    bool acceptsMidi() const override                       { return false; }
+    bool producesMidi() const override                      { return false; }
+    juce::AudioProcessorEditor* createEditor() override     { return nullptr; }
+    bool hasEditor() const override                         { return false; }
+    int getNumPrograms() override                           { return 1; }
+    int getCurrentProgram() override                        { return 0; }
+    void setCurrentProgram (int) override                   {}
+    const juce::String getProgramName (int) override        { return {}; }
+    void changeProgramName (int, const juce::String&) override {}
+    void getStateInformation (juce::MemoryBlock&) override  {}
+    void setStateInformation (const void*, int) override    {}
+
+private:
+    int latency;
+    float gain;
+    std::vector<float> line;
+    int pos = 0;
+};
 
 std::shared_ptr<const SourceFile> sineFile (double rate, double seconds, double freq, double amp, double phase = 0.0)
 {
@@ -320,6 +370,74 @@ int main (int argc, char* argv[])
         line ("");
         line ("Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: "
               + juce::String (step, 2) + (step <= 1.05 ? " (no clicks)." : " (CLICK)."));
+        line ("");
+    }
+
+    //== 5c. Plugin latency and bypass ========================================
+    {
+        line ("## Plugin latency and bypass");
+        line ("");
+        const double rate = 48000.0;
+        const int lat = 480;    // 10 ms
+        auto runMixer = [&] (Mixer& m, int total, std::function<void (int)> atBlock)
+        {
+            std::vector<float> l ((size_t) total, 0.0f), r (l.size(), 0.0f);
+            for (int pos = 0; pos < total; pos += 64)
+            {
+                if (atBlock) atBlock (pos);
+                float* outs[2] = { l.data() + pos, r.data() + pos };
+                m.process (outs, 2, std::min (64, total - pos));
+            }
+            return l;
+        };
+
+        // Same file in A and B; A has a 10 ms plugin before its fader, B has none.
+        auto src = noiseFile (rate, 1.0, 21);
+        Mixer m;
+        m.prepare (rate, 64);
+        m.deck (0).setSource (src);
+        m.deck (1).setSource (src);
+        std::unique_ptr<juce::AudioProcessor> replaced;
+        juce::String err;
+        m.chain (Mixer::preChain (0)).insert (0, std::make_unique<DelayPlugin> (lat, 1.0f), replaced, err);
+        m.playAll();
+        const int total = 24000;
+        auto y = runMixer (m, total, {});
+
+        // Expected: both decks arrive 10 ms late, together: twice the file, delayed by `lat`.
+        const float* f = src->audio.getReadPointer (0);
+        const int ramp = (int) std::lround (DeckPlayer::declickMs * 0.001 * rate);
+        double err1 = 0.0;
+        for (int i = lat + ramp; i < total; ++i)
+            err1 = std::max (err1, (double) std::abs (y[(size_t) i] - 2.0f * f[i - lat]));
+        double early = 0.0;
+        for (int i = 0; i < lat; ++i) early = std::max (early, (double) std::abs (y[(size_t) i]));
+
+        line ("Decks A and B play the same noise; A has a test plugin with 10 ms latency before its fader, B none. "
+              "Goblet reports a deck latency of " + juce::String (m.getDeckLatency (0)) + " samples for A and delays B by "
+              + juce::String (m.getAlignedLatency() - m.getDeckLatency (1)) + " samples.");
+        line ("");
+        line ("- Largest difference from twice the file delayed by 10 ms: " + juce::String (err1, 9) + (err1 < 1.0e-6 ? " (aligned)." : " (NOT aligned)."));
+        line ("- Largest level in the first 10 ms (should be silence): " + juce::String (early, 9) + ".");
+
+        // Bypass while playing: a sine through a plugin that halves the level; bypass after 0.25 s, back on after 0.5 s.
+        auto sine = sineFile (rate, 1.0, 1000.0, 0.5, 0.5 * pi);
+        Mixer b;
+        b.prepare (rate, 64);
+        b.deck (0).setSource (sine);
+        b.chain (Mixer::postChain (0)).insert (0, std::make_unique<DelayPlugin> (lat, 0.5f), replaced, err);
+        b.playAll();
+        auto z = runMixer (b, 48000, [&] (int pos)
+        {
+            b.chain (Mixer::postChain (0)).setBypass (0, pos >= 12000 && pos < 24000);
+        });
+        const double sineStep = 2.0 * std::sin (pi * 1000.0 / rate) * 0.5;
+        const double bypassStep = maxStep (z, (size_t) (lat + ramp + 2)) / sineStep;
+        auto peakIn = [&] (int from, int to) { double p = 0.0; for (int i = from; i < to; ++i) p = std::max (p, (double) std::abs (z[(size_t) i])); return p; };
+        line ("- Bypass switched while playing (a 1 kHz sine through a test plugin that halves the level, with 10 ms latency): "
+              "level " + juce::String (peakIn (6000, 11000), 3) + " with the plugin, " + juce::String (peakIn (14000, 23000), 3) + " bypassed, "
+              + juce::String (peakIn (26000, 47000), 3) + " back on; largest step " + juce::String (bypassStep, 2)
+              + (bypassStep <= 1.05 ? " (no clicks: the dry path is delayed by the plugin's latency, so the timing does not jump)." : " (CLICK)."));
         line ("");
     }
 

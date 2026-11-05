@@ -3,6 +3,7 @@
 //   A  file name · rate · length   [Open...] [Play] [M] [S] [Loop] [Rev]
 //   [ waveform with in and out flags, playhead                          ]
 //   In [..]  Out [..]  Crossfade [..] ms  [shape]  Tension [----]
+//   [1 · plugin] -> [2 · plugin]                          to fader A ->
 //
 // It talks to its DeckPlayer and to the Mixer (mute, solo) directly;
 // MainComponent only saves and restores its state and forwards shortcuts.
@@ -12,6 +13,7 @@
 #include <JuceHeader.h>
 #include "../Engine/Mixer.h"
 #include "SourceStrip.h"
+#include "PluginHost.h"
 
 namespace goblet
 {
@@ -20,7 +22,7 @@ class DeckView : public juce::Component,
                  public juce::FileDragAndDropTarget
 {
 public:
-    DeckView (int index, Mixer& mixer, juce::AudioFormatManager& formats);
+    DeckView (int index, Mixer& mixer, juce::AudioFormatManager& formats, PluginHost& host);
 
     void loadFile (const juce::File& file);
     void openFileDialog();
@@ -33,6 +35,7 @@ public:
     void readState (const juce::PropertySet&);
 
     void refresh();            // called by MainComponent's timer: playhead and Play button
+    void refreshSlots();       // a plugin was loaded, removed or bypassed
 
     std::function<void()> onChanged;                       // something worth saving changed
     std::function<void()> onPlayRequested;                 // before a Play: turns audio on if it was off
@@ -62,6 +65,8 @@ private:
     juce::AudioFormatManager& formats;
 
     SourceStrip strip;
+    SlotButton slot1, slot2;
+    juce::Rectangle<int> slotArrow, toFaderArea;
     juce::TextButton openButton { "Open..." }, playButton, muteButton { "M" }, soloButton { "S" }, loopButton { "Loop" }, reverseButton { "Rev" };
     juce::Label inCaption { {}, "In" }, inField, outCaption { {}, "Out" }, outField;
     juce::Label fadeCaption { {}, "Crossfade (ms)" }, fadeField;

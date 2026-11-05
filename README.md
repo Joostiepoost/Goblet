@@ -37,20 +37,40 @@ Other options:
 | Step | Content | State |
 | --- | --- | --- |
 | 1 | One deck: source strip, fragment, loop, reverse, crossfade, quality presets, transport; measurements | done |
-| 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | testing |
-| 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | |
+| 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | done |
+| 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | testing |
 | 4 | Faders and MIDI: dB law, mapping window, smoothing, pickup, reversed ranges, 14-bit switch | |
 | 5 | Live capture: sum and stems, tail, captures panel, snapshots | |
 | 6 | Gesture re-render: replay a take's CCs offline at Render quality | |
 
 The full design is in the Goblet project proposal.
 
+## Using step 3: plugin slots
+
+- **Fourteen slots**, all for your own AU and VST3 plugins:
+  - two **before the fader** on each deck, in the row under the deck's waveform;
+  - two **after the fader** for each deck, under its meter in the mixer column (for a limiter, a maximizer, or anything else that belongs after the fader);
+  - two on the **sum**, at the foot of the mixer column, for a final limiter.
+  The signal runs: deck, slot 1, slot 2, (fader, step 4), after-fader slot 1, slot 2, the sum, sum slot 1, slot 2, output.
+- **Plugins...** scans for plugins. The first time, Goblet takes Effet's plugin list (or Trajet's), so no scan is needed.
+- **Click an empty slot** to choose a plugin. **Click a filled slot** to open the plugin's window. **Right-click** (or the small arrow) for the menu: open window, **Bypass**, replace with, move to the other slot, remove.
+- **Bypass** crossfades the plugin out over 20 ms; the plugin keeps running, so the timing doesn't jump and nothing clicks. A bypassed slot shows its name struck through and dimmed.
+- **Latency compensation**: when one deck's plugins add more latency than another's, Goblet delays the faster decks so all three stay sample-aligned in the sum. The status line shows the plugin latency and how much each deck is delayed; a slot's tooltip shows its plugin's latency.
+- Everything is remembered between sessions: which plugin sits in which slot, its settings and its bypass. Plugin settings are saved when you close its window, when you change a slot, and when you quit.
+
+**Worth testing**:
+- Load your usual plugins in different slots, including FabFilter (the AU sidechain fix from Effet is in), GRM, and a limiter or maximizer after a fader.
+- Quit and reopen: every plugin comes back with its settings and bypass.
+- Same file and fragment in two decks, a plugin with lookahead (a limiter, a linear-phase EQ) before one deck's fader: Play all should still sound as one deck, louder, without flanging. That is the latency compensation at work.
+- Bypass on and off while playing: no clicks, no jump in time.
+- Audio off and on again with plugins loaded, and a change of sample rate in Audio...: the plugins keep working.
+
 ## Using step 2: three decks, meters, mute and solo, audio on/off
 
 - **Decks B and C** work exactly like deck A (see step 1 below). Keys: **1**, **2**, **3** play or stop a deck.
 - **Play all** (or **Space**) starts every deck that has a file in the same sample.
 - **M** mutes a deck (**Shift-1/2/3**), **S** solos it (**Option-1/2/3**). With any deck soloed, only soloed decks are heard; mute wins over solo. Both ramp over 5 ms, so they never click. A deck silenced by mute or by another deck's solo shows its letter dimmed.
-- **Mixer column**: a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in. The faders (step 4) and plugin slots (step 3) have dashed placeholders.
+- **Mixer column**: a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read after the deck's plugins and *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in.
 - **Sum meter** (top right): what you hear. The red lamp lights when the sum reaches 0 dBFS and stays lit until you click it.
 - **Audio on / Audio off** (**Shift-Cmd-A**): off closes the audio device, so Goblet uses no CPU while it sits in the background. The files and settings stay loaded. Play, Play all or Space turn audio back on.
 
@@ -93,7 +113,7 @@ Everything is remembered between sessions: the file, fragment, loop, reverse, cr
 2. The playhead stays inside the fragment, with reverse switched while playing.
 3. Loop seam and reverse switch: no clicks with a crossfade.
 4. Start, stop and play once: no clicks from the 3 ms ramps.
-5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps.
+5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing.
 6. CPU per deck, per preset, at the rate ratios that occur in practice.
 
 Please commit `report.md` with GitHub Desktop so I can read your M4's CPU table. `report-cloud-test-machine.md` holds the same report from the slower machine the code was written on: there all checks pass, and the costliest realistic case (a 96 kHz file on a 44.1 kHz device at Render) takes about 35% of one core per deck. The M4 should need roughly two thirds of that. In the reverse-switch column, equal power and Bezier show 1.32 and 1.28 rather than 1.00: that is the expected level bump of those shapes on correlated material during the crossfade, not a click.

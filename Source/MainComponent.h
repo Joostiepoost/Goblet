@@ -1,9 +1,10 @@
 // MainComponent.h — everything inside Goblet's main window.
 //
-// Step 2: three decks (source strip, fragment, loop, reverse, crossfade,
-// Play, Mute, Solo), the mixer column with a meter per deck, the sum meter
-// and clip lamp, the quality presets and the audio on/off switch. The
-// captures panel is drawn as a placeholder where it will go.
+// Step 3: three decks (source strip, fragment, loop, reverse, crossfade,
+// Play, Mute, Solo, two slots before the fader), the mixer column (meters,
+// two slots after each fader, the sum's two slots), the sum meter and clip
+// lamp, the quality presets and the audio on/off switch. The captures panel
+// is drawn as a placeholder where it will go.
 
 #pragma once
 
@@ -11,6 +12,7 @@
 #include "Engine/Mixer.h"
 #include "UI/DeckView.h"
 #include "UI/Meters.h"
+#include "UI/PluginHost.h"
 
 class MainComponent : public juce::Component,
                       private juce::Timer,
@@ -43,10 +45,11 @@ private:
 
     std::vector<std::unique_ptr<goblet::DeckView>> decks;
 
-    goblet::MixerPanel mixerPanel { mixer };
+    goblet::PluginHost pluginHost { mixer, properties };
+    goblet::MixerPanel mixerPanel { mixer, pluginHost };
     goblet::SumMeter sumMeter { mixer };
 
-    juce::TextButton playAllButton, stopAllButton, audioButton { "Audio..." }, audioOnButton { "Audio on" };
+    juce::TextButton playAllButton, stopAllButton, audioButton { "Audio..." }, audioOnButton { "Audio on" }, pluginsButton { "Plugins..." };
     juce::ComboBox qualityBox;
     juce::Label qualityCaption { {}, "Quality" }, cpuLabel, statusLabel;
     juce::TooltipWindow tooltips { this, 600 };

@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 2: three decks, mixer meters, audio on/off.
+// MainComponent.cpp — step 3: plugin slots, latency alignment.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -17,6 +17,7 @@ MainComponent::MainComponent()
     opts.folderName = "Goblet";
     opts.osxLibrarySubFolder = "Application Support";
     properties.setStorageParameters (opts);
+    pluginHost.loadPluginList();
 
     // Toolbar
     playAllButton.setButtonText (juce::String::fromUTF8 ("\xe2\x96\xb6 Play all"));
@@ -33,6 +34,8 @@ MainComponent::MainComponent()
     audioOnButton.setTooltip ("Audio processing on/off (Shift-Cmd-A). Off closes the audio device, so Goblet uses no CPU while it waits "
                               "in the background; the files stay loaded. Play turns it back on.");
     audioOnButton.onClick = [this] { setAudioEnabled (audioOnButton.getToggleState()); };
+    pluginsButton.setTooltip ("Scan for AU and VST3 plugins");
+    pluginsButton.onClick = [this] { pluginHost.showScanner(); };
 
     for (int q = 0; q < numQualities; ++q)
         qualityBox.addItem (juce::String (kernelSpec ((Quality) q).name) + "  (" + juce::String (kernelSpec ((Quality) q).taps) + ")", q + 1);
@@ -44,7 +47,7 @@ MainComponent::MainComponent()
         if (! restoring) saveSettings();
     };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &qualityBox })
+    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &pluginsButton, &qualityBox })
     {
         c->setWantsKeyboardFocus (false);
         addAndMakeVisible (c);
@@ -67,7 +70,7 @@ MainComponent::MainComponent()
     // Decks
     for (int i = 0; i < Mixer::numDecks; ++i)
     {
-        auto d = std::make_unique<DeckView> (i, mixer, formats);
+        auto d = std::make_unique<DeckView> (i, mixer, formats, pluginHost);
         d->onChanged = [this] { if (! restoring) saveSettings(); };
         d->onPlayRequested = [this] { if (! audioEnabled) setAudioEnabled (true); };
         d->onStatus = [this] (const juce::String& s) { setStatus (s); };
@@ -82,7 +85,15 @@ MainComponent::MainComponent()
     deviceManager.addAudioCallback (&mixer);
     deviceManager.addChangeListener (this);
 
+    pluginHost.onStatus = [this] (const juce::String& s) { setStatus (s); };
+    pluginHost.onChanged = [this]
+    {
+        for (auto& d : decks) d->refreshSlots();
+        mixerPanel.refreshSlots();
+    };
+
     loadSettings();
+    pluginHost.restore();
     if (err.isNotEmpty()) setStatus ("Audio: " + err);
 
     setWantsKeyboardFocus (true);
@@ -93,6 +104,8 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     saveSettings();
+    pluginHost.save();
+    pluginHost.closeAllEditors();
     deviceManager.removeAudioCallback (&mixer);
     deviceManager.removeChangeListener (this);
 }
@@ -245,7 +258,26 @@ void MainComponent::timerCallback()
                        << (int) std::ceil ((double) k.spec().taps * juce::jmax (1.0, r)) << " taps";
             }
         }
+        const int latency = mixer.getTotalLatency();
+        if (latency > 0)
+        {
+            s << juce::String::fromUTF8 ("   \xc2\xb7   ") << "Plugin latency " << juce::String (1000.0 * latency / deviceRate, 1) << " ms";
+            if (mixer.getAlignedLatency() > 0)
+            {
+                s << " (decks aligned:";
+                for (int i = 0; i < Mixer::numDecks; ++i)
+                    s << " " << decks[(size_t) i]->letter() << " +" << juce::String (1000.0 * (mixer.getAlignedLatency() - mixer.getDeckLatency (i)) / deviceRate, 1);
+                s << " ms)";
+            }
+        }
         statusLabel.setText (s, juce::dontSendNotification);
+    }
+
+    // Plugin latencies can change at any time (some plugins change theirs with a setting).
+    if (tick % 30 == 0)
+    {
+        for (auto& d : decks) d->refreshSlots();
+        mixerPanel.refreshSlots();
     }
 }
 
@@ -296,6 +328,8 @@ void MainComponent::resized()
     audioButton.setBounds (bar.removeFromLeft (80));
     bar.removeFromLeft (6);
     audioOnButton.setBounds (bar.removeFromLeft (84));
+    bar.removeFromLeft (6);
+    pluginsButton.setBounds (bar.removeFromLeft (84));
     cpuLabel.setBounds (bar.removeFromRight (100));
     bar.removeFromRight (16);
     sumMeter.setBounds (bar.removeFromRight (200));

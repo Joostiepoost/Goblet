@@ -1,6 +1,6 @@
 # Goblet deck player: measurements (step 1)
 
-Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 12:05:58pm.
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 12:37:32pm.
 
 ## Passthrough at equal rates
 
@@ -51,14 +51,22 @@ Decks A and B play the same 1 kHz sine (level of one deck: 0.177 RMS). Level hea
 
 Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: 1.00 (no clicks).
 
+## Plugin latency and bypass
+
+Decks A and B play the same noise; A has a test plugin with 10 ms latency before its fader, B none. Goblet reports a deck latency of 480 samples for A and delays B by 480 samples.
+
+- Largest difference from twice the file delayed by 10 ms: 0.000000000 (aligned).
+- Largest level in the first 10 ms (should be silence): 0.000000000.
+- Bypass switched while playing (a 1 kHz sine through a test plugin that halves the level, with 10 ms latency): level 0.250 with the plugin, 0.500 bypassed, 0.250 back on; largest step 1.00 (no clicks: the dry path is delayed by the plugin's latency, so the timing does not jump).
+
 ## CPU
 
 Time for one deck to produce 1 s of stereo output, as a share of one core of this machine (white noise, looped). Three decks cost about three times as much; all three run on the same audio thread.
 
 | Preset | 48.0 on 48.0 kHz (×1.000) | 44.1 on 48.0 kHz (×0.919) | 48.0 on 44.1 kHz (×1.088) | 44.1 on 96.0 kHz (×0.459) | 48.0 on 96.0 kHz (×0.500) | 96.0 on 48.0 kHz (×2.000) | 96.0 on 44.1 kHz (×2.177) | 192.0 on 48.0 kHz (×4.000) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| High | 0.0% | 1.4% | 4.1% | 2.7% | 2.6% | 8.0% | 8.0% | 16.4% |
-| Very high | 0.0% | 2.5% | 9.5% | 8.2% | 6.4% | 16.8% | 16.4% | 33.5% |
-| Max | 0.0% | 4.0% | 11.4% | 8.0% | 8.0% | 21.3% | 21.3% | 43.3% |
-| Render | 0.0% | 7.5% | 16.3% | 11.0% | 9.7% | 31.9% | 32.1% | 64.0% |
+| High | 0.0% | 1.4% | 4.1% | 2.8% | 2.6% | 7.9% | 8.1% | 19.0% |
+| Very high | 0.0% | 2.6% | 8.7% | 6.2% | 5.3% | 20.0% | 15.4% | 30.2% |
+| Max | 0.0% | 3.8% | 11.1% | 6.9% | 6.6% | 21.8% | 24.6% | 46.8% |
+| Render | 0.0% | 5.2% | 16.5% | 10.6% | 11.3% | 32.9% | 32.5% | 67.2% |
 

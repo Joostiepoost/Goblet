@@ -72,8 +72,19 @@ void PeakMeter::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-MixerPanel::MixerPanel (Mixer& m) : mixer (m)
+MixerPanel::MixerPanel (Mixer& m, PluginHost& host) : mixer (m)
 {
+    for (int k = 0; k < slotsPerChain; ++k)
+    {
+        for (int i = 0; i < Mixer::numDecks; ++i)
+        {
+            postSlots[i][k] = std::make_unique<SlotButton> (host, Mixer::postChain (i), k, true);
+            addAndMakeVisible (*postSlots[i][k]);
+        }
+        sumSlots[k] = std::make_unique<SlotButton> (host, Mixer::sumChain, k);
+        addAndMakeVisible (*sumSlots[k]);
+    }
+
     for (int i = 0; i < Mixer::numDecks; ++i)
     {
         meters[i] = std::make_unique<PeakMeter> (true);
@@ -100,6 +111,16 @@ void MixerPanel::refresh()
         peakLabels[i].setText (db <= -99.0f ? juce::String::fromUTF8 ("\xe2\x88\x92\xe2\x88\x9e")
                                             : juce::String (db, 1).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92")),
                                juce::dontSendNotification);
+    }
+}
+
+void MixerPanel::refreshSlots()
+{
+    for (int k = 0; k < slotsPerChain; ++k)
+    {
+        for (int i = 0; i < Mixer::numDecks; ++i)
+            postSlots[i][k]->refresh();
+        sumSlots[k]->refresh();
     }
 }
 
@@ -136,31 +157,40 @@ void MixerPanel::paint (juce::Graphics& g)
         }
     }
 
-    // Where steps 3 and 4 will go.
-    auto placeholder = [&g] (juce::Rectangle<int> a, const juce::String& text)
-    {
-        const float dashes[] = { 4.0f, 4.0f };
-        juce::Path p, d;
-        p.addRoundedRectangle (a.toFloat().reduced (0.5f), 6.0f);
-        juce::PathStrokeType (1.0f).createDashedStroke (d, p, dashes, 2);
-        g.setColour (juce::Colours::white.withAlpha (0.18f));
-        g.fillPath (d);
-        g.setColour (juce::Colours::white.withAlpha (0.35f));
-        g.setFont (juce::FontOptions (12.0f));
-        g.drawFittedText (text, a.reduced (8, 4), juce::Justification::centred, 2);
-    };
-    placeholder (slotsArea, "Faders: step 4. Post-fader slots: step 3");
-    placeholder (sumArea, "Sum slots: step 3");
+    g.setFont (juce::FontOptions (11.5f));
+    g.setColour (juce::Colours::white.withAlpha (0.35f));
+    g.drawText ("faders: step 4", faderNote, juce::Justification::centred);
+    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.drawText ("after the fader", postCaption, juce::Justification::centred);
+
+    g.setColour (juce::Colours::white.withAlpha (0.12f));
+    g.drawHorizontalLine (sumArea.getY() - 8, (float) sumArea.getX(), (float) sumArea.getRight());
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    g.drawText ("Sum", sumArea.withWidth (40), juce::Justification::centredLeft);
 }
 
 void MixerPanel::resized()
 {
     auto r = getLocalBounds().reduced (14, 10);
     r.removeFromTop (28);
-    sumArea = r.removeFromBottom (40);
-    r.removeFromBottom (10);
-    slotsArea = r.removeFromBottom (78);
-    r.removeFromBottom (10);
+
+    sumArea = r.removeFromBottom (28);
+    {
+        auto a = sumArea.withTrimmedLeft (44);
+        const int w = (a.getWidth() - 6) / 2;
+        sumSlots[0]->setBounds (a.removeFromLeft (w));
+        a.removeFromLeft (6);
+        sumSlots[1]->setBounds (a);
+    }
+    r.removeFromBottom (18);
+
+    // Under each meter: the two slots after the fader, then a caption.
+    postCaption = r.removeFromBottom (16).withTrimmedLeft (36);
+    auto slotRows = r.removeFromBottom (54).withTrimmedLeft (36);
+    r.removeFromBottom (6);
+    faderNote = r.removeFromBottom (16).withTrimmedLeft (36);
+    r.removeFromBottom (4);
 
     r.removeFromLeft (36);    // the dB scale
     const int w = r.getWidth() / Mixer::numDecks;
@@ -172,6 +202,11 @@ void MixerPanel::resized()
         peakLabels[i].setBounds (s.removeFromBottom (20));
         s.removeFromBottom (4);
         meters[i]->setBounds (s.withSizeKeepingCentre (18, s.getHeight()));
+
+        auto col = slotRows.withX (stripAreas[i].getX()).withWidth (w).reduced (3, 0);
+        postSlots[i][0]->setBounds (col.removeFromTop (25));
+        col.removeFromTop (4);
+        postSlots[i][1]->setBounds (col.removeFromTop (25));
     }
 }
 

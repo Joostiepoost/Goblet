@@ -21,10 +21,13 @@ static juce::String playText (bool playing)
     return playing ? juce::String::fromUTF8 ("\xe2\x96\xa0 Stop") : juce::String::fromUTF8 ("\xe2\x96\xb6 Play");
 }
 
-DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f)
-    : index (deckIndex), mixer (m), player (m.deck (deckIndex)), formats (f)
+DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f, PluginHost& host)
+    : index (deckIndex), mixer (m), player (m.deck (deckIndex)), formats (f),
+      slot1 (host, Mixer::preChain (deckIndex), 0), slot2 (host, Mixer::preChain (deckIndex), 1)
 {
     addAndMakeVisible (strip);
+    addAndMakeVisible (slot1);
+    addAndMakeVisible (slot2);
     strip.onFragmentChanged = [this] (int64_t in, int64_t out) { setFragment (in, out); };
     strip.onFragmentDragEnded = [this] { changed(); };
 
@@ -173,6 +176,12 @@ void DeckView::togglePlay()
     refresh();
 }
 
+void DeckView::refreshSlots()
+{
+    slot1.refresh();
+    slot2.refresh();
+}
+
 void DeckView::toggleMute()
 {
     muteButton.setToggleState (! muteButton.getToggleState(), juce::sendNotification);
@@ -311,6 +320,15 @@ void DeckView::paint (juce::Graphics& g)
              + juce::String::fromUTF8 ("  \xc2\xb7  ") + (s->fileChannels == 1 ? "mono" : s->fileChannels == 2 ? "stereo" : juce::String (s->fileChannels) + " ch (1-2 used)")
              + juce::String::fromUTF8 ("  \xc2\xb7  ") + formatTime (s->seconds());
     g.drawText (info, header.withTrimmedRight (400), juce::Justification::centredLeft, true);
+
+    // Between the two slots, and the way out to the fader.
+    g.setColour (juce::Colours::white.withAlpha (0.35f));
+    if (! slotArrow.isEmpty())
+        g.drawArrow (juce::Line<float> ((float) slotArrow.getX(), (float) slotArrow.getCentreY(),
+                                        (float) slotArrow.getRight(), (float) slotArrow.getCentreY()), 1.0f, 6.0f, 6.0f);
+    g.setFont (juce::FontOptions (12.5f));
+    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.drawText ("to fader " + letter() + juce::String::fromUTF8 (" \xe2\x86\x92"), toFaderArea, juce::Justification::centredRight);
 }
 
 void DeckView::resized()
@@ -329,6 +347,13 @@ void DeckView::resized()
     playButton.setBounds (header.removeFromRight (84));
     header.removeFromRight (12);
     openButton.setBounds (header.removeFromRight (84));
+
+    auto slots = r.removeFromBottom (26);
+    r.removeFromBottom (8);
+    slot1.setBounds (slots.removeFromLeft (200));
+    slotArrow = slots.removeFromLeft (28).reduced (5, 0);
+    slot2.setBounds (slots.removeFromLeft (200));
+    toFaderArea = slots;
 
     auto fields = r.removeFromBottom (26);
     r.removeFromBottom (8);

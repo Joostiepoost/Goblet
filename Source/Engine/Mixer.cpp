@@ -5,6 +5,45 @@
 namespace goblet
 {
 
+Mixer::Mixer()
+{
+    for (auto& c : chains)
+    {
+        c = std::make_unique<PluginChain>();
+        c->setPlayHead (this);
+    }
+}
+
+Mixer::~Mixer()
+{
+    // The plugins go first, while the playhead they point to still exists.
+    for (auto& c : chains)
+        c = nullptr;
+}
+
+int Mixer::getAlignedLatency() const noexcept
+{
+    int l = 0;
+    for (int i = 0; i < numDecks; ++i)
+        l = juce::jmax (l, getDeckLatency (i));
+    return l;
+}
+
+juce::Optional<juce::AudioPlayHead::PositionInfo> Mixer::getPosition() const
+{
+    PositionInfo info;
+    const double rate = outputRate.load();
+    const auto samples = headSamples.load();
+    info.setIsPlaying (headPlaying.load());
+    info.setTimeInSamples (samples);
+    info.setTimeInSeconds ((double) samples / rate);
+    info.setBpm (120.0);
+    info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+    info.setPpqPosition ((double) samples / rate * 2.0);
+    info.setIsLooping (false);
+    return info;
+}
+
 bool Mixer::anyPlaying() const noexcept
 {
     for (auto& d : decks)
@@ -34,7 +73,11 @@ void Mixer::prepare (double sampleRate, int maximumBlockSize)
         decks[(size_t) i].prepare (sampleRate, maximumBlockSize);
         strips[(size_t) i].buffer.setSize (2, n, false, false, true);
         strips[(size_t) i].gain = isAudible (i) ? 1.0f : 0.0f;
+        strips[(size_t) i].align.clear();
     }
+
+    for (auto& c : chains)
+        c->prepare (sampleRate, maximumBlockSize);
 }
 
 void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noexcept
@@ -60,6 +103,11 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
     bool anySolo = false;
     for (auto& s : strips) anySolo = anySolo || s.solo.load();
 
+    // Host playhead for the plugins.
+    if (startAll) headSamples.store (0);
+    bool playingNow = false;
+
+    // First every deck through its player and plugins...
     for (int i = 0; i < numDecks; ++i)
     {
         auto& d = decks[(size_t) i];
@@ -71,12 +119,28 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         s.buffer.clear (0, numSamples);
         float* buf[2] = { s.buffer.getWritePointer (0), s.buffer.getWritePointer (1) };
         d.process (buf, numSamples, kernel);
+        playingNow = playingNow || d.isPlaying();
+
+        // The deck's plugins: before the fader, (fader: step 4), after it.
+        juce::AudioBuffer<float> view (buf, 2, numSamples);
+        chains[(size_t) preChain (i)]->process (view, numSamples);
+        chains[(size_t) postChain (i)]->process (view, numSamples);
 
         // Meter, before mute and solo.
         for (int ch = 0; ch < 2; ++ch)
             raise (s.peak[(size_t) ch], s.buffer.getMagnitude (ch, 0, numSamples));
+    }
 
-        // Mute and solo, ramped.
+    // ...then aligned to the slowest deck, muted or soloed, and summed.
+    const int aligned = getAlignedLatency();
+
+    for (int i = 0; i < numDecks; ++i)
+    {
+        auto& s = strips[(size_t) i];
+        float* buf[2] = { s.buffer.getWritePointer (0), s.buffer.getWritePointer (1) };
+
+        s.align.process (buf, numSamples, aligned - getDeckLatency (i));
+
         const float target = (! s.mute.load() && (! anySolo || s.solo.load())) ? 1.0f : 0.0f;
 
         if (juce::exactlyEqual (s.gain, target))
@@ -97,6 +161,12 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
             s.gain = g;
         }
     }
+
+    // The sum's plugins.
+    chains[(size_t) sumChain]->process (sum, numSamples);
+
+    headPlaying.store (playingNow);
+    if (playingNow) headSamples.fetch_add (numSamples);
 
     // Sum meter and clip lamp.
     for (int ch = 0; ch < 2; ++ch)

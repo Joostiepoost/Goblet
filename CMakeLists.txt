@@ -47,6 +47,7 @@ set(GOBLET_ENGINE_SOURCES
     Source/Engine/SincKernel.cpp
     Source/Engine/SourceFile.cpp
     Source/Engine/DeckPlayer.cpp
+    Source/Engine/PluginChain.cpp
     Source/Engine/Mixer.cpp)
 
 target_sources(Goblet PRIVATE
@@ -55,7 +56,8 @@ target_sources(Goblet PRIVATE
     ${GOBLET_ENGINE_SOURCES}
     Source/UI/SourceStrip.cpp
     Source/UI/DeckView.cpp
-    Source/UI/Meters.cpp)
+    Source/UI/Meters.cpp
+    Source/UI/PluginHost.cpp)
 
 target_compile_definitions(Goblet PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Goblet,JUCE_PRODUCT_NAME>"
@@ -94,6 +96,7 @@ if(GOBLET_BUILD_TESTS)
         PRIVATE
             juce::juce_audio_devices
             juce::juce_audio_formats
+            juce::juce_audio_processors
         PUBLIC
             juce::juce_recommended_config_flags
             juce::juce_recommended_lto_flags)
