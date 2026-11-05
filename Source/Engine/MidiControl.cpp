@@ -61,7 +61,7 @@ void MidiEngine::apply (Mixer& mixer, const MidiMapping& m, float value) noexcep
             if (m.smoothMs <= 0.0f || s.current < 0.0f)
             {
                 s.current = value;
-                mixer.chain (t.chain).setParameter (t.slot, t.index, value);
+                mixer.setPluginParameter (t.chain, t.slot, t.index, value);
                 s.lastApplied = value;
             }
             break;
@@ -158,7 +158,7 @@ void MidiEngine::process (Mixer& mixer, const CcTable& table, int numSamples, do
             const float alpha = (float) (1.0 - std::exp (-dt / tau));
             s.current += alpha * (s.goal - s.current);
             if (std::abs (s.goal - s.current) < 1.0e-4f) s.current = s.goal;
-            mixer.chain (m.target.chain).setParameter (m.target.slot, m.target.index, s.current);
+            mixer.setPluginParameter (m.target.chain, m.target.slot, m.target.index, s.current);
             s.lastApplied = s.current;
         }
 

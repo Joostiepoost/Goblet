@@ -40,10 +40,29 @@ Other options:
 | 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | done |
 | 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | done |
 | 4 | Trims and faders (+12 dB headroom), MIDI: mapping window, smoothing, Jump/Pickup, reversed ranges, 14-bit switch | done |
-| 5 | Live capture: sum and stems, tail, captures panel, snapshots | testing |
-| 6 | Gesture re-render: replay a take's CCs offline at Render quality | |
+| 5 | Live capture: sum and stems, tail, captures panel, snapshots | done |
+| 6 | Gesture re-render: replay a take offline at Render quality | testing |
 
 The full design is in the Goblet project proposal.
+
+## Using step 6: re-render
+
+- **Every take now also records its gesture** (`<take>.gesture`, beside the snapshot): everything that changed the mix during the take, with its exact time: faders, trims, mute, solo, deck starts and stops, loop, reverse, fragments, crossfades, bypass, and the plugin parameters your MIDI mappings moved. It also keeps where each deck, crossfade and gain ramp was at the moment you pressed Rec.
+- **Re-render** (captures panel) plays the take again offline, faster than real time, at **Render** quality: from the take's snapshot it builds a second mixer with the same files, fragments and plugins (fresh instances, with the settings they had at Rec), and replays the gesture into it. The live mix keeps running meanwhile; the panel shows the progress, and clicking the button again cancels.
+- The result is a new take beside the original, `<take> render`, with its own stems and a copy of the snapshot, as long as the original.
+- At the quality the take was played at, the re-render is identical to the live take (the test program checks this sample for sample). At Render quality, what differs is what goes through the sinc player: files at another rate than the device, and the crossfades.
+- **What can differ** with real plugins:
+  - plugins that don't behave the same on every run (random modulation, free-running LFOs, anything that depends on the clock);
+  - knobs you turned in a plugin's own window during the take (the plugin keeps those to itself; MIDI-mapped parameters are recorded);
+  - if the decks were already playing when you pressed Rec: the plugins in the second mixer start from silence, so a reverb has no tail from before the take during the first moments. Starting a take with Rec from a stop (which starts the decks) avoids this.
+- Plugins render with their offline flag set; some (convolution reverbs, some analog models) then use higher quality modes.
+
+**Worth testing**:
+- A take with Touché on the faders and a mapped plugin parameter, started from a stop; Re-render it, drag both into Reaper and compare (polarity-invert one: what is left is only the Render-quality difference).
+- A take with plugins you suspect of randomness, to see how close the re-render comes.
+- Cancel a running re-render, and re-render while playing live.
+
+Note on loops: when a fragment is a whole file whose end flows on into its start (a seamless loop), the Equal power crossfade raises the level by up to 3 dB at the loop point; Linear or S-curve keep it flat there.
 
 ## Using step 5: live capture
 
@@ -157,7 +176,7 @@ Everything is remembered between sessions: the file, fragment, loop, reverse, cr
 2. The playhead stays inside the fragment, with reverse switched while playing.
 3. Loop seam and reverse switch: no clicks with a crossfade.
 4. Start, stop and play once: no clicks from the 3 ms ramps.
-5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing. Trim, faders and MIDI: the fader law, trim and fader levels, a slow 7-bit sweep without zipper steps, 14-bit, a crossfade from one CC, and Pickup. Capture: with plugin latencies on a deck and on the sum, the stems add up to the sum sample for sample; the tail ends the take after the decks stop.
+5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing. Trim, faders and MIDI: the fader law, trim and fader levels, a slow 7-bit sweep without zipper steps, 14-bit, a crossfade from one CC, and Pickup. Capture: with plugin latencies on a deck and on the sum, the stems add up to the sum sample for sample; the tail ends the take after the decks stop. Re-render: a take full of MIDI, mouse moves, mute, reverse and stop/start, replayed from its gesture, is identical to the live take at the same quality; and the Re-render button's whole path (files on disk, the new take) works.
 6. CPU per deck, per preset, at the rate ratios that occur in practice.
 
 Please commit `report.md` with GitHub Desktop so I can read your M4's CPU table. `report-cloud-test-machine.md` holds the same report from the slower machine the code was written on: there all checks pass, and the costliest realistic case (a 96 kHz file on a 44.1 kHz device at Render) takes about 35% of one core per deck. The M4 should need roughly two thirds of that. In the reverse-switch column, equal power and Bezier show 1.32 and 1.28 rather than 1.00: that is the expected level bump of those shapes on correlated material during the crossfade, not a click.

@@ -28,6 +28,8 @@ public:
     void setRecording (const juce::File& file, double seconds, bool inTail);   // shown as the first row while capturing
 
     std::function<void (const juce::File& snapshot)> onRestoreSnapshot;
+    std::function<void (const juce::File& take)> onRerender;
+    void setRendering (const juce::String& name, double progress);   // empty name: none
     std::function<void (const juce::String&)> showStatus;
 
     /** The snapshot saved beside a take. */
@@ -42,7 +44,7 @@ private:
         juce::File file;
         double seconds = 0.0, rate = 0.0;
         int bits = 0;
-        bool hasSnapshot = false, isStem = false, expanded = false;
+        bool hasSnapshot = false, hasGesture = false, isStem = false, expanded = false;
         juce::Array<juce::File> stems;
     };
     class Row;
@@ -77,7 +79,9 @@ private:
     juce::Label titleLabel, folderLabel, hintLabel, recordingLabel;
     juce::ListBox list { "captures", this };
     juce::TextButton playButton { "Play" }, renameButton { "Rename..." }, revealButton { "Show" },
-                     deleteButton { "Delete" }, restoreButton { "Restore snapshot..." }, folderButton { "Open folder" };
+                     deleteButton { "Delete" }, restoreButton { "Restore snapshot..." }, folderButton { "Open folder" },
+                     rerenderButton { "Re-render" };
+    bool rendering = false;
     juce::String lastListing;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CapturesPanel)

@@ -1,11 +1,11 @@
 // MainComponent.h — everything inside Goblet's main window.
 //
-// Step 5: three decks (source strip, fragment, loop, reverse, crossfade,
+// Step 6: three decks (source strip, fragment, loop, reverse, crossfade,
 // Play, Mute, Solo, trim, two slots before the fader), the mixer column
 // (faders, meters, two slots after each fader, the sum's two slots), the sum
 // meter and clip lamp, MIDI mappings, live capture (sum and stems, with a
-// snapshot of the session) and the captures panel, the quality presets and
-// the audio on/off switch.
+// snapshot of the session and its gesture), the re-render, the captures
+// panel, the quality presets and the audio on/off switch.
 
 #pragma once
 
@@ -18,6 +18,7 @@
 #include "UI/MidiPanel.h"
 #include "UI/CapturesPanel.h"
 #include "Engine/CaptureRecorder.h"
+#include "UI/TakeRenderer.h"
 
 class MainComponent : public juce::Component,
                       private juce::Timer,
@@ -71,6 +72,8 @@ private:
 
     goblet::CaptureRecorder recorder { mixer };
     std::unique_ptr<goblet::CapturesPanel> capturesPanel;
+    std::unique_ptr<goblet::TakeRenderer> renderer;
+    void rerender (const juce::File& take);
 
     juce::TextButton playAllButton, stopAllButton, recordButton, audioButton { "Audio..." }, audioOnButton { "Audio on" }, pluginsButton { "Plugins..." }, midiButton { "MIDI..." };
     juce::ComboBox qualityBox;

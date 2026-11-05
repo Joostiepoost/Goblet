@@ -74,6 +74,21 @@ public:
     void startNow() noexcept;                                    // play() for this block (Play all)
     void stopNow() noexcept;
 
+    // For recording a take's gesture (audio thread): what the deck did in the
+    // last block, and where it is; and for the re-render, putting it back there.
+    bool takeStartedFlag() noexcept     { const bool f = startedFlag; startedFlag = false; return f; }
+    bool takeStoppedFlag() noexcept     { const bool f = stoppedFlag; stoppedFlag = false; return f; }
+    int getStateCode() const noexcept   { return (int) state; }        // 0 stopped, 1 playing, 2 stopping
+    double getTravelled() const noexcept { return q; }
+    void restorePosition (int stateCode, double travelled) noexcept;
+    struct Detail { int fadeRemaining = 0, fadeDir = 1, rampIn = 0, rampOut = 0, rampOutLen = 1; double fadePos = 0.0; };
+    Detail getDetail() const noexcept         { return { fade.remaining, fade.dir, rampIn, rampOut, rampOutLen, fade.pos }; }
+    void restoreDetail (const Detail& d) noexcept
+    {
+        fade.remaining = d.fadeRemaining; fade.dir = d.fadeDir; fade.pos = d.fadePos;
+        rampIn = d.rampIn; rampOut = d.rampOut; rampOutLen = juce::jmax (1, d.rampOutLen);
+    }
+
     // Adds numSamples of stereo output to out[0] and out[1].
     void process (float* const* out, int numSamples, const SincKernel& kernel) noexcept;
 
@@ -103,6 +118,7 @@ private:
     bool lastReverse = false;
     double q = 0.0;                    // distance travelled into the fragment, source samples
     int declickLen = 144, rampIn = 0, rampOut = 0, rampOutLen = 1;
+    bool startedFlag = false, stoppedFlag = false;
 
     struct Fade { double pos = 0.0; int dir = 1; int remaining = 0; int length = 1; } fade;
 

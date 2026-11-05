@@ -179,6 +179,20 @@ void DeckPlayer::startNow() noexcept
     q = 0.0;
     rampOut = 0;
     state = State::playing;
+    startedFlag = true;
+}
+
+void DeckPlayer::restorePosition (int stateCode, double travelled) noexcept
+{
+    lastSource = sourcePtr.load (std::memory_order_acquire);
+    lastReverse = reverse.load();
+    lastPlay = playCounter.load();
+    lastStop = stopCounter.load();
+    fade.remaining = 0;
+    q = juce::jmax (0.0, travelled);
+    rampIn = declickLen;                  // already sounding: no fade-in
+    rampOut = rampOutLen = declickLen;
+    state = stateCode == 1 ? State::playing : stateCode == 2 ? State::stopping : State::stopped;
 }
 
 void DeckPlayer::stopNow() noexcept
@@ -187,6 +201,7 @@ void DeckPlayer::stopNow() noexcept
     {
         state = State::stopping;
         rampOut = rampOutLen = declickLen;
+        stoppedFlag = true;
     }
 }
 

@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 5: live capture and the captures panel.
+// MainComponent.cpp — step 6: the re-render.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -78,6 +78,17 @@ MainComponent::MainComponent()
     capturesPanel = std::make_unique<CapturesPanel> (mixer.getPreview());
     capturesPanel->showStatus = [this] (const juce::String& t) { setStatus (t); };
     capturesPanel->onRestoreSnapshot = [this] (const juce::File& f) { restoreSnapshot (f); };
+    capturesPanel->onRerender = [this] (const juce::File& f) { rerender (f); };
+    renderer = std::make_unique<TakeRenderer> (pluginHost.getFormats(), formats);
+    renderer->onFinished = [this] (const juce::File& result, const juce::String& error)
+    {
+        capturesPanel->setRendering ({}, 0.0);
+        capturesPanel->refresh();
+        if (result != juce::File())
+            setStatus ("Re-rendered as " + result.getFileNameWithoutExtension() + (error.isNotEmpty() ? ". Note: " + error : juce::String (".")));
+        else
+            setStatus (error);
+    };
     capturesPanel->setFolder (capturesFolder());
     addAndMakeVisible (*capturesPanel);
     recorder.onFinished = [this] (const juce::File& f) { captureFinished (f); };
@@ -124,6 +135,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     if (recorder.isActive()) recorder.cut();
+    renderer = nullptr;
     capturesPanel = nullptr;
     saveSettings();
     pluginHost.closeAllEditors();
@@ -369,6 +381,16 @@ void MainComponent::toggleRecord()
     setStatus ("Capturing " + file.getFileNameWithoutExtension() + ". When the last deck stops, the tail is captured too; R ends it at once.");
 }
 
+void MainComponent::rerender (const juce::File& take)
+{
+    if (renderer->isBusy()) { renderer->cancel(); return; }
+
+    juce::String error;
+    if (! renderer->start (take, Quality::Render, error)) { setStatus (error); return; }
+    capturesPanel->setRendering (take.getFileNameWithoutExtension(), 0.0);
+    setStatus ("Re-rendering " + take.getFileNameWithoutExtension() + " at Render quality. The live mix keeps running.");
+}
+
 void MainComponent::captureFinished (const juce::File& file)
 {
     recordButton.setToggleState (false, juce::dontSendNotification);
@@ -417,6 +439,9 @@ void MainComponent::timerCallback()
         d->refresh();
     mixerPanel.refresh();
     sumMeter.refresh();
+
+    if (renderer != nullptr && renderer->isBusy())
+        capturesPanel->setRendering (renderer->getTake().getFileNameWithoutExtension(), renderer->getProgress());
 
     if (recorder.isActive())
     {

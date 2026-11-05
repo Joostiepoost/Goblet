@@ -61,7 +61,8 @@ target_sources(Goblet PRIVATE
     Source/UI/PluginHost.cpp
     Source/UI/MidiMappings.cpp
     Source/UI/MidiPanel.cpp
-    Source/UI/CapturesPanel.cpp)
+    Source/UI/CapturesPanel.cpp
+    Source/UI/TakeRenderer.cpp)
 
 target_compile_definitions(Goblet PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Goblet,JUCE_PRODUCT_NAME>"
@@ -93,9 +94,9 @@ option(GOBLET_BUILD_TESTS "Build the GobletTests measurement program" OFF)
 if(GOBLET_BUILD_TESTS)
     juce_add_console_app(GobletTests PRODUCT_NAME "GobletTests")
     juce_generate_juce_header(GobletTests)
-    target_sources(GobletTests PRIVATE Tests/DeckTests.cpp ${GOBLET_ENGINE_SOURCES})
+    target_sources(GobletTests PRIVATE Tests/DeckTests.cpp ${GOBLET_ENGINE_SOURCES} Source/UI/TakeRenderer.cpp)
     target_compile_definitions(GobletTests PRIVATE
-        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1)
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(GobletTests
         PRIVATE
             juce::juce_audio_devices

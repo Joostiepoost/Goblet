@@ -1,6 +1,6 @@
 # Goblet deck player: measurements (step 1)
 
-Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 2:41:52pm.
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 3:26:32pm.
 
 ## Passthrough at equal rates
 
@@ -50,7 +50,7 @@ Decks A and B play the same 1 kHz sine (level of one deck: 0.177 RMS). Level hea
 | A soloed and muted, B muted | silence | 0.000000 |
 | all cleared | two decks | 0.354 |
 
-Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: 1.41 (CLICK).
+Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: 1.00 (no clicks).
 
 ## Plugin latency and bypass
 
@@ -90,14 +90,33 @@ Deck A plays noise through a test plugin with 10 ms latency, fader at -6 dB; dec
 - Largest difference between the sum and stem A + stem B: 0.000000030 (peak level 0.779): the stems add up to the sum, sample for sample.
 - The tail: the decks stopped at block 300, the capture ended at block 360 (320 ms later: the plugins' delay, the stop ramp and 0.3 s of silence).
 
+## Re-render from the gesture
+
+A 3.2 s take: three decks (one 44.1 kHz file on the 48 kHz device), test plugins with latency on deck A, after fader B and on the sum. The decks were already playing when Rec was pressed. During the take: a CC moving fader B, a CC moving the gain of deck A's plugin (40 ms smoothing), a mouse move on fader A, mute on C, reverse on B, A stopped and started again, a trim change, a bypass and a solo; then Rec again (cut). The gesture holds 845 events (187 fader, 600 plugin parameter, 2 start/stop) over 3.20 s.
+
+| Re-render | Stream | Same length | Largest difference | Peak |
+| --- | --- | --- | --- | --- |
+| Max (as live) | sum | yes | 0.000000000 | 1.283 |
+| Max (as live) | stem A | yes | 0.000000000 | 0.809 |
+| Max (as live) | stem B | yes | 0.000000000 | 0.558 |
+| Max (as live) | stem C | yes | 0.000000000 | 0.229 |
+| Render | sum | yes | 0.056259394 | 1.283 |
+| Render | stem A | yes | 0.056259401 | 0.809 |
+| Render | stem B | yes | 0.000000030 | 0.558 |
+| Render | stem C | yes | 0.000021622 | 0.229 |
+
+- The Re-render button's path (snapshot and gesture read from disk, a new take written): done. Goblet test take render.wav: 153600 samples; Goblet test take render A.wav: 153600 samples; Goblet test take render B.wav: 153600 samples; Goblet test take render C.wav: none; the snapshot was copied.
+
+At the live take's quality the re-render is identical to it, sum and stems, even though the decks were already playing when Rec was pressed (the gesture keeps where each deck, crossfade and gain ramp was at that moment). At Render quality only what goes through the sinc player differs: deck A's 44.1 kHz file, and the crossfades of the others. With real plugins the first moments can still differ if the decks were already playing: a reverb in the second mixer starts without the tail it had in the live one.
+
 ## CPU
 
 Time for one deck to produce 1 s of stereo output, as a share of one core of this machine (white noise, looped). Three decks cost about three times as much; all three run on the same audio thread.
 
 | Preset | 48.0 on 48.0 kHz (×1.000) | 44.1 on 48.0 kHz (×0.919) | 48.0 on 44.1 kHz (×1.088) | 44.1 on 96.0 kHz (×0.459) | 48.0 on 96.0 kHz (×0.500) | 96.0 on 48.0 kHz (×2.000) | 96.0 on 44.1 kHz (×2.177) | 192.0 on 48.0 kHz (×4.000) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| High | 0.0% | 1.4% | 4.2% | 2.9% | 3.4% | 9.4% | 8.5% | 22.6% |
-| Very high | 0.0% | 2.4% | 7.6% | 4.8% | 4.5% | 14.7% | 14.6% | 29.2% |
-| Max | 0.0% | 3.3% | 10.3% | 6.8% | 6.5% | 20.2% | 19.8% | 40.1% |
-| Render | 0.0% | 5.0% | 16.0% | 10.3% | 9.6% | 31.3% | 31.1% | 68.2% |
+| High | 0.0% | 1.4% | 4.1% | 2.7% | 2.7% | 8.1% | 8.1% | 16.2% |
+| Very high | 0.0% | 2.5% | 8.0% | 5.4% | 4.8% | 14.8% | 15.2% | 30.8% |
+| Max | 0.0% | 3.6% | 10.6% | 6.7% | 6.9% | 22.7% | 23.8% | 44.0% |
+| Render | 0.0% | 5.4% | 16.3% | 10.4% | 10.0% | 32.5% | 32.3% | 66.3% |
 

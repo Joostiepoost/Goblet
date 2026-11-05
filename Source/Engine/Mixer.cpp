@@ -135,7 +135,158 @@ void Mixer::startCapture (const std::array<Writer*, numStreams>& writers, const 
     captureTail = captureSilent = 0;
     captureWritten.store (0);
     captureCut.store (false);
+    gestureFifo.reset();
+    gestureOverflow.store (false);
+    gestureClock = 0;
+    gestureLength.store (0);
+    gestureFirst.store (true);
     captureState.store (CaptureState::recording);
+}
+
+//==============================================================================
+void Mixer::pushGesture (int kind, int deck, int64_t a, int64_t b, double v, double w, double x, double y) noexcept
+{
+    const auto scope = gestureFifo.write (1);
+    if (scope.blockSize1 + scope.blockSize2 == 0) { gestureOverflow.store (true); return; }
+    auto& e = gestureBuffer[(size_t) (scope.blockSize1 > 0 ? scope.startIndex1 : scope.startIndex2)];
+    e.time = gestureClock;
+    e.kind = kind;
+    e.deck = deck;
+    e.a = a; e.b = b; e.v = v; e.w = w; e.x = x; e.y = y;
+}
+
+int Mixer::readGesture (GestureEvent* dest, int maxCount) noexcept
+{
+    const auto scope = gestureFifo.read (juce::jmin (maxCount, gestureFifo.getNumReady()));
+    int n = 0;
+    for (int i = 0; i < scope.blockSize1; ++i) dest[n++] = gestureBuffer[(size_t) (scope.startIndex1 + i)];
+    for (int i = 0; i < scope.blockSize2; ++i) dest[n++] = gestureBuffer[(size_t) (scope.startIndex2 + i)];
+    return n;
+}
+
+void Mixer::recordGestureState() noexcept
+{
+    using K = GestureEvent;
+    const bool first = gestureFirst.exchange (false);
+
+    for (int i = 0; i < numDecks; ++i)
+    {
+        auto& r = recorded[(size_t) i];
+        auto& s = strips[(size_t) i];
+        auto& d = decks[(size_t) i];
+        if (first)
+        {
+            // Where everything is at Rec, exactly: the player, its crossfade, the gain ramps.
+            r = DeckRecord();
+            pushGesture (K::deckPosition, i, d.getStateCode(), 0, d.getTravelled(), 0.0);
+            const auto dd = d.getDetail();
+            pushGesture (K::deckDetail, i, dd.fadeRemaining, dd.fadeDir, dd.fadePos, dd.rampIn, dd.rampOut, dd.rampOutLen);
+            pushGesture (K::rampState, i, 0, s.fader.left, s.fader.current, s.fader.target, s.fader.step);
+            pushGesture (K::rampState, i, 1, s.trim.left, s.trim.current, s.trim.target, s.trim.step);
+            pushGesture (K::rampState, i, 2, 0, s.gain, 0.0, 0.0);
+        }
+
+        const float f = s.faderPos.load(), fr = s.faderRampMs.load();
+        if (! juce::exactlyEqual (f, r.fader) || ! juce::exactlyEqual (fr, r.faderRamp)) { r.fader = f; r.faderRamp = fr; pushGesture (K::fader, i, 0, 0, f, fr); }
+        const float t = s.trimDb.load(), tr = s.trimRampMs.load();
+        if (! juce::exactlyEqual (t, r.trim) || ! juce::exactlyEqual (tr, r.trimRamp)) { r.trim = t; r.trimRamp = tr; pushGesture (K::trim, i, 0, 0, t, tr); }
+        const int m = s.mute.load() ? 1 : 0, so = s.solo.load() ? 1 : 0;
+        if (m != r.mute) { r.mute = m; pushGesture (K::mute, i, m, 0, 0.0, 0.0); }
+        if (so != r.solo) { r.solo = so; pushGesture (K::solo, i, so, 0, 0.0, 0.0); }
+        const int lp = d.isLooping() ? 1 : 0, rv = d.isReversed() ? 1 : 0;
+        if (lp != r.loop) { r.loop = lp; pushGesture (K::loop, i, lp, 0, 0.0, 0.0); }
+        if (rv != r.reverse) { r.reverse = rv; pushGesture (K::reverse, i, rv, 0, 0.0, 0.0); }
+        const auto in = d.getInPoint(), out = d.getOutPoint();
+        if (in != r.in || out != r.out) { r.in = in; r.out = out; pushGesture (K::fragment, i, in, out, 0.0, 0.0); }
+        const float ms = (float) d.getCrossfadeMs(), te = (float) d.getCrossfadeTension();
+        const int sh = (int) d.getCrossfadeShape();
+        if (! juce::exactlyEqual (ms, r.fadeMs) || sh != r.shape || ! juce::exactlyEqual (te, r.tension))
+        {
+            r.fadeMs = ms; r.shape = sh; r.tension = te;
+            pushGesture (K::crossfade, i, sh, 0, ms, te);
+        }
+    }
+
+    // The plugin parameters MIDI drives, as they are at Rec.
+    if (first)
+        midi.forEachPluginTarget ([this] (const MidiTarget& t)
+        {
+            const float v = chains[(size_t) t.chain]->getParameter (t.slot, t.index);
+            if (v >= 0.0f) pushGesture (GestureEvent::parameter, t.chain, t.slot, t.index, v, 0.0);
+        });
+
+    for (int c = 0; c < numChains; ++c)
+        for (int k = 0; k < slotsPerChain; ++k)
+        {
+            const int b = chains[(size_t) c]->isBypassed (k) ? 1 : 0;
+            if (first || b != recordedBypass[(size_t) c][(size_t) k])
+            {
+                recordedBypass[(size_t) c][(size_t) k] = b;
+                pushGesture (K::bypass, c, k, b, 0.0, 0.0);
+            }
+        }
+}
+
+void Mixer::setPluginParameter (int chainId, int slot, int index, float value) noexcept
+{
+    chains[(size_t) chainId]->setParameter (slot, index, value);
+    if (recordingGesture)
+        pushGesture (GestureEvent::parameter, chainId, slot, index, value, 0.0);
+}
+
+void Mixer::applyGestureEvent (const GestureEvent& e) noexcept
+{
+    using K = GestureEvent;
+    if (e.kind != K::bypass && e.kind != K::parameter && ! juce::isPositiveAndBelow (e.deck, numDecks)) return;
+    if ((e.kind == K::bypass || e.kind == K::parameter) && ! juce::isPositiveAndBelow (e.deck, numChains)) return;
+
+    switch (e.kind)
+    {
+        case K::deckPosition: decks[(size_t) e.deck].restorePosition ((int) e.a, e.v); break;
+        case K::fader:        setFaderPosition (e.deck, (float) e.v, (float) e.w); break;
+        case K::trim:         setTrimDb (e.deck, (float) e.v, (float) e.w); break;
+        case K::mute:         setMute (e.deck, e.a != 0); break;
+        case K::solo:         setSolo (e.deck, e.a != 0); break;
+        case K::loop:         decks[(size_t) e.deck].setLoop (e.a != 0); break;
+        case K::reverse:      decks[(size_t) e.deck].setReverse (e.a != 0); break;
+        case K::fragment:     decks[(size_t) e.deck].setFragment (e.a, e.b); break;
+        case K::crossfade:    decks[(size_t) e.deck].setCrossfade (e.v, (CrossfadeShape) juce::jlimit (0, numCrossfadeShapes - 1, (int) e.a), e.w); break;
+        case K::start:        decks[(size_t) e.deck].startNow(); break;
+        case K::stop:         decks[(size_t) e.deck].stopNow(); break;
+        case K::bypass:       chains[(size_t) e.deck]->setBypass ((int) e.a, e.b != 0); break;
+        case K::parameter:    chains[(size_t) e.deck]->setParameter ((int) e.a, (int) e.b, (float) e.v); break;
+        case K::deckDetail:
+        {
+            DeckPlayer::Detail dd;
+            dd.fadeRemaining = (int) e.a; dd.fadeDir = (int) e.b; dd.fadePos = e.v;
+            dd.rampIn = (int) e.w; dd.rampOut = (int) e.x; dd.rampOutLen = (int) e.y;
+            decks[(size_t) e.deck].restoreDetail (dd);
+            break;
+        }
+        case K::rampState:
+        {
+            auto& s = strips[(size_t) e.deck];
+            if (e.a == 2) { s.gain = (float) e.v; break; }
+            auto& r = e.a == 0 ? s.fader : s.trim;
+            r.current = (float) e.v; r.target = (float) e.w; r.step = (float) e.x; r.left = (int) e.b;
+            break;
+        }
+        default: break;
+    }
+}
+
+void Mixer::snapGains() noexcept
+{
+    bool anySolo = false;
+    for (auto& s : strips) anySolo = anySolo || s.solo.load();
+    for (auto& s : strips)
+    {
+        s.trim.current = s.trim.target = juce::Decibels::decibelsToGain (s.trimDb.load());
+        s.trim.left = 0;
+        s.fader.current = s.fader.target = faderGain (s.faderPos.load());
+        s.fader.left = 0;
+        s.gain = (! s.mute.load() && (! anySolo || s.solo.load())) ? 1.0f : 0.0f;
+    }
 }
 
 void Mixer::stopCapture()
@@ -250,9 +401,23 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
     bool anySolo = false;
     for (auto& s : strips) anySolo = anySolo || s.solo.load();
 
+    // Capture: the writers are only touched while their lock is held.
+    const auto cstate = captureState.load();
+    juce::SpinLock::ScopedTryLockType captureTry (captureLock);
+    const bool capturing = (cstate == CaptureState::recording || cstate == CaptureState::tail) && captureTry.isLocked();
+    if (capturing && captureCut.exchange (false))
+        captureState.store (CaptureState::finished);
+    const bool writing = capturing && captureState.load() != CaptureState::finished;
+    recordingGesture = writing;
+
     // MIDI: faders, trims and plugin parameters follow their controllers.
     const double rate = outputRate.load();
-    midi.process (*this, ccTable, numSamples, rate);
+    if (midiEnabled.load())
+        midi.process (*this, ccTable, numSamples, rate);
+
+    // The gesture: what this block will use, recorded before it is used.
+    if (writing)
+        recordGestureState();
 
     // Host playhead for the plugins.
     if (startAll) headSamples.store (0);
@@ -269,7 +434,14 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
 
         s.buffer.clear (0, numSamples);
         float* buf[2] = { s.buffer.getWritePointer (0), s.buffer.getWritePointer (1) };
+        const bool started = d.takeStartedFlag(), stopped = d.takeStoppedFlag();   // from startNow/stopNow above
         d.process (buf, numSamples, kernel);
+        const bool started2 = d.takeStartedFlag(), stopped2 = d.takeStoppedFlag();  // from the deck's own Play/Stop
+        if (writing)
+        {
+            if (started || started2) pushGesture (GestureEvent::start, i, 0, 0, 0.0, 0.0);
+            if (stopped || stopped2) pushGesture (GestureEvent::stop, i, 0, 0, 0.0, 0.0);
+        }
         playingNow = playingNow || d.isPlaying();
 
         // Trim, the plugins before the fader, the fader, the plugins after it.
@@ -283,14 +455,6 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         for (int ch = 0; ch < 2; ++ch)
             raise (s.peak[(size_t) ch], s.buffer.getMagnitude (ch, 0, numSamples));
     }
-
-    // Capture: the writers are only touched while their lock is held.
-    const auto cstate = captureState.load();
-    juce::SpinLock::ScopedTryLockType captureTry (captureLock);
-    const bool capturing = (cstate == CaptureState::recording || cstate == CaptureState::tail) && captureTry.isLocked();
-    if (capturing && captureCut.exchange (false))
-        captureState.store (CaptureState::finished);
-    const bool writing = capturing && captureState.load() != CaptureState::finished;
 
     // ...then aligned to the slowest deck, muted or soloed, and summed.
     const int aligned = getAlignedLatency();
@@ -351,7 +515,10 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         const float* sumCh[2] = { out[0], out[1] };
         writeCapture (0, sumCh, numSamples);
         captureTailCheck (playingNow, numSamples);
+        gestureClock += numSamples;
+        gestureLength.store (gestureClock);
     }
+    recordingGesture = false;
 
     if (numOutputs >= 2)
     {

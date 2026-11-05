@@ -3,6 +3,7 @@
 // A take is up to four WAV files at the device's rate, 32-bit float:
 //   <name>.wav                   the sum (what you hear)
 //   <name> stems/<name> A.wav    one stem per deck that has a file
+//   <name>.gesture               what changed the mix, for the re-render
 // It hands threaded writers to the Mixer (which writes from the audio thread
 // without blocking) and closes the files once the Mixer reports the capture
 // finished (after the tail).
@@ -42,7 +43,8 @@ public:
     }
 
     /** Starts a take: the sum into `sumFile`, and a stem for each deck marked in `stems`. */
-    bool start (const juce::File& sumFile, const std::array<bool, Mixer::numDecks>& stems, double tailLimitSeconds, juce::String& error)
+    bool start (const juce::File& sumFile, const std::array<bool, Mixer::numDecks>& stems, double tailLimitSeconds, juce::String& error,
+                bool withGesture = true)
     {
         if (isActive()) { error = "A capture is already running."; return false; }
 
@@ -65,6 +67,9 @@ public:
             skips[(size_t) (d + 1)] = mixer.getAlignedLatency();
 
         currentFile = sumFile;
+        gesture = Gesture();
+        gesture.sampleRate = mixer.getOutputRate();
+        recordGesture = withGesture;
         mixer.startCapture (raw, skips, tailLimitSeconds);
         startTimerHz (20);
         return true;
@@ -90,24 +95,61 @@ public:
 private:
     std::unique_ptr<Mixer::Writer> openWriter (const juce::File& file, juce::String& error)
     {
+        auto writer = createWavWriter (file, mixer.getOutputRate(), error);
+        if (writer == nullptr) return {};
+        return std::make_unique<ThreadedSink> (writer.release(), writerThread);
+    }
+
+    // Live: writes from the audio thread without blocking, through a large buffer.
+    struct ThreadedSink : Mixer::Writer
+    {
+        ThreadedSink (juce::AudioFormatWriter* w, juce::TimeSliceThread& t) : writer (w, t, 1 << 17) {}
+        void write (const float* const* ch, int n) override   { writer.write (ch, n); }
+        juce::AudioFormatWriter::ThreadedWriter writer;
+    };
+
+public:
+    // Offline: writes straight to the file (for the re-render, which runs faster than real time).
+    struct DirectSink : Mixer::Writer
+    {
+        explicit DirectSink (std::unique_ptr<juce::AudioFormatWriter> w) : writer (std::move (w)) {}
+        void write (const float* const* ch, int n) override   { writer->writeFromFloatArrays (ch, 2, n); }
+        std::unique_ptr<juce::AudioFormatWriter> writer;
+    };
+
+    static std::unique_ptr<juce::AudioFormatWriter> createWavWriter (const juce::File& file, double rate, juce::String& error)
+    {
         file.getParentDirectory().createDirectory();
         file.deleteFile();
         auto stream = std::make_unique<juce::FileOutputStream> (file);
         if (! stream->openedOk()) { error = "Cannot write " + file.getFullPathName(); return {}; }
-
         juce::WavAudioFormat wav;
-        auto options = juce::AudioFormatWriterOptions{}.withSampleRate (mixer.getOutputRate())
+        auto options = juce::AudioFormatWriterOptions{}.withSampleRate (rate)
                                                         .withNumChannels (2)
                                                         .withBitsPerSample (32)
                                                         .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
         std::unique_ptr<juce::OutputStream> out (stream.release());
         auto writer = wav.createWriterFor (out, options);
-        if (writer == nullptr) { error = "Cannot create a WAV writer."; return {}; }
-        return std::make_unique<Mixer::Writer> (writer.release(), writerThread, 1 << 17);
+        if (writer == nullptr) error = "Cannot create a WAV writer.";
+        return writer;
+    }
+
+private:
+
+    void drainGesture()
+    {
+        GestureEvent buffer[512];
+        for (;;)
+        {
+            const int n = mixer.readGesture (buffer, 512);
+            if (n <= 0) break;
+            if (recordGesture) gesture.events.insert (gesture.events.end(), buffer, buffer + n);
+        }
     }
 
     void timerCallback() override
     {
+        drainGesture();
         if (mixer.getCaptureState() == Mixer::CaptureState::finished
             || (cutRequestedAt > 0.0 && juce::Time::getMillisecondCounterHiRes() - cutRequestedAt > 300.0))
             finishNow();
@@ -119,6 +161,13 @@ private:
         cutRequestedAt = 0.0;
         mixer.stopCapture();
         for (auto& w : writers) w = nullptr;     // flushes and closes the files
+        drainGesture();
+        if (recordGesture)
+        {
+            gesture.length = mixer.getGestureLength();
+            if (! mixer.gestureOverflowed())
+                gesture.writeTo (Gesture::fileFor (currentFile));
+        }
         stopTimer();
         if (onFinished) onFinished (currentFile);
     }
@@ -128,6 +177,8 @@ private:
     std::array<std::unique_ptr<Mixer::Writer>, Mixer::numStreams> writers;
     juce::File currentFile;
     double cutRequestedAt = 0.0;
+    Gesture gesture;
+    bool recordGesture = true;
 };
 
 } // namespace goblet

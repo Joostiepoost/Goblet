@@ -23,6 +23,9 @@
 //   When no deck plays any more, the capture runs on until the sum falls below
 //   -90 dBFS for 0.3 s (or a time limit): the tail. A capture can be listened
 //   to (the preview), mixed into the output after everything else.
+// * The gesture: while capturing, every change the mixer applies is recorded
+//   with its time (Gesture.h), so a take can be rendered again offline: a
+//   second Mixer replays it through applyGestureEvent(), with MIDI off.
 
 #pragma once
 
@@ -30,6 +33,7 @@
 #include "DeckPlayer.h"
 #include "PluginChain.h"
 #include "MidiControl.h"
+#include "Gesture.h"
 
 #include <array>
 #include <atomic>
@@ -99,13 +103,32 @@ public:
     // a null writer means that stream is not written.
     static constexpr int numStreams = numDecks + 1;
     enum class CaptureState { idle, recording, tail, finished };
-    using Writer = juce::AudioFormatWriter::ThreadedWriter;
+    // Where a stream goes: a threaded WAV writer when live, a plain one offline.
+    struct Writer
+    {
+        virtual ~Writer() = default;
+        virtual void write (const float* const* channels, int numSamples) = 0;
+    };
     void startCapture (const std::array<Writer*, numStreams>& writers, const std::array<int, numStreams>& skipSamples, double tailLimitSeconds);
     void cutCapture() noexcept                            { captureCut.store (true); }      // ends it now, no tail
     void stopCapture();                                   // detaches the writers; after this they may be deleted
     CaptureState getCaptureState() const noexcept         { return captureState.load(); }
     double getCapturedSeconds() const noexcept            { return (double) captureWritten.load() / outputRate.load(); }
     juce::AudioTransportSource& getPreview() noexcept     { return preview; }
+
+    // The gesture of the take being captured, picked up by the message thread.
+    int readGesture (GestureEvent* dest, int maxCount) noexcept;
+    bool gestureOverflowed() const noexcept               { return gestureOverflow.load(); }
+    int64_t getGestureLength() const noexcept             { return gestureLength.load(); }   // samples since Rec
+
+    // Re-render (on the thread that calls process): put the mixer and decks in a
+    // recorded state; gains jump to their values instead of ramping.
+    void applyGestureEvent (const GestureEvent&) noexcept;
+    void snapGains() noexcept;
+    void setMidiEnabled (bool e) noexcept                 { midiEnabled.store (e); }
+
+    // A plugin parameter set by a MIDI mapping (audio thread); recorded in the gesture.
+    void setPluginParameter (int chain, int slot, int index, float value) noexcept;
 
     // MIDI.
     CcTable& getCcTable() noexcept                        { return ccTable; }
@@ -176,6 +199,24 @@ private:
     int64_t captureTail = 0, captureSilent = 0, captureTailLimit = 0;
     juce::AudioTransportSource preview;
     juce::AudioBuffer<float> previewBuffer { 2, 4096 };
+
+    // Gesture recording (audio thread -> message thread).
+    void pushGesture (int kind, int deck, int64_t a, int64_t b, double v, double w, double x = 0.0, double y = 0.0) noexcept;
+    void recordGestureState() noexcept;
+    struct DeckRecord
+    {
+        float fader = -1.0f, faderRamp = -1.0f, trim = -1000.0f, trimRamp = -1.0f, fadeMs = -1.0f, tension = -1.0f;
+        int mute = -1, solo = -1, loop = -1, reverse = -1, shape = -1;
+        int64_t in = -1, out = -1;
+    };
+    std::array<DeckRecord, numDecks> recorded;
+    std::array<std::array<int, slotsPerChain>, numChains> recordedBypass {};
+    juce::AbstractFifo gestureFifo { 1 << 17 };
+    std::vector<GestureEvent> gestureBuffer = std::vector<GestureEvent> ((size_t) (1 << 17));
+    std::atomic<bool> gestureOverflow { false }, gestureFirst { false }, midiEnabled { true };
+    int64_t gestureClock = 0;
+    std::atomic<int64_t> gestureLength { 0 };
+    bool recordingGesture = false;
     std::atomic<bool> headPlaying { false };
     std::atomic<juce::int64> headSamples { 0 };
     std::atomic<int> quality { (int) Quality::Max };

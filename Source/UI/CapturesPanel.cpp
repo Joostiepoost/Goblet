@@ -3,6 +3,7 @@
 #include "CapturesPanel.h"
 #include "TimeFormat.h"
 #include "../Engine/CaptureRecorder.h"
+#include "../Engine/Gesture.h"
 
 namespace goblet
 {
@@ -59,6 +60,7 @@ public:
             info << "   " << e.file.getLastModificationTime().formatted ("%d/%m %H:%M");
             if (! e.stems.isEmpty()) info << juce::String::fromUTF8 ("   \xe2\x80\xa2 sum + ") << e.stems.size() << (e.stems.size() == 1 ? " stem" : " stems");
             if (e.hasSnapshot) info << juce::String::fromUTF8 ("   \xe2\x80\xa2 snapshot");
+            if (e.hasGesture) info << juce::String::fromUTF8 ("   \xe2\x80\xa2 gesture");
         }
         g.drawText (info, r, juce::Justification::centredLeft, true);
     }
@@ -133,7 +135,7 @@ CapturesPanel::CapturesPanel (juce::AudioTransportSource& previewTransport) : pr
     revealButton.onClick = [this] { if (auto* e = selectedEntry()) e->file.revealToUser(); };
     revealButton.setTooltip ("Show in Finder");
     deleteButton.onClick = [this] { deleteSelected(); };
-    deleteButton.setTooltip ("Move the take (sum, stems and snapshot) to the bin");
+    deleteButton.setTooltip ("Move the take (sum, stems, snapshot and gesture) to the bin");
     restoreButton.onClick = [this]
     {
         if (auto* e = selectedEntry())
@@ -142,8 +144,17 @@ CapturesPanel::CapturesPanel (juce::AudioTransportSource& previewTransport) : pr
     };
     restoreButton.setTooltip ("Go back to the decks, plugins, trims, faders and mappings that produced this take");
     folderButton.onClick = [this] { folder.createDirectory(); folder.startAsProcess(); };
+    rerenderButton.onClick = [this]
+    {
+        if (auto* e = selectedEntry())
+            if (e->hasGesture && e->hasSnapshot && onRerender)
+                onRerender (e->file);
+    };
+    rerenderButton.setTooltip ("Play the take again offline, at Render quality, from its snapshot and its gesture (every fader, trim, "
+                               "mute, start and stop, and the plugin parameters your MIDI mappings moved). The result is a new take "
+                               "with its own stems. Click again while it runs to cancel.");
 
-    for (auto* b : { &playButton, &renameButton, &revealButton, &deleteButton, &restoreButton, &folderButton })
+    for (auto* b : { &playButton, &renameButton, &revealButton, &deleteButton, &restoreButton, &folderButton, &rerenderButton })
     {
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (b);
@@ -171,10 +182,21 @@ void CapturesPanel::setFolder (const juce::File& f)
 void CapturesPanel::setRecording (const juce::File& file, double seconds, bool inTail)
 {
     juce::String t;
+    if (file == juce::File() && rendering) return;     // the render's progress is shown
     if (file != juce::File())
         t << juce::String::fromUTF8 ("\xe2\x97\x8f ") << (inTail ? "Tail of " : "Recording ") << file.getFileNameWithoutExtension()
           << "  " << formatTime (seconds);
     if (recordingLabel.getText() != t) recordingLabel.setText (t, juce::dontSendNotification);
+}
+
+void CapturesPanel::setRendering (const juce::String& name, double progress)
+{
+    rendering = name.isNotEmpty();
+    if (rendering)
+        recordingLabel.setText ("Re-rendering " + name + ": " + juce::String (juce::roundToInt (progress * 100.0)) + "%", juce::dontSendNotification);
+    else if (recordingLabel.getText().startsWith ("Re-rendering"))
+        recordingLabel.setText ({}, juce::dontSendNotification);
+    updateButtons();
 }
 
 CapturesPanel::Entry CapturesPanel::readEntry (const juce::File& f, bool isStem)
@@ -209,6 +231,7 @@ void CapturesPanel::refresh()
     {
         auto e = readEntry (f, false);
         e.hasSnapshot = snapshotFor (f).existsAsFile();
+        e.hasGesture = Gesture::fileFor (f).existsAsFile();
         auto stems = CaptureRecorder::stemsFolder (f).findChildFiles (juce::File::findFiles, false, "*.wav");
         stems.sort();
         e.stems = stems;
@@ -275,6 +298,8 @@ void CapturesPanel::updateButtons()
     renameButton.setEnabled (e != nullptr && ! e->isStem);
     deleteButton.setEnabled (e != nullptr && ! e->isStem);
     restoreButton.setEnabled (e != nullptr && e->hasSnapshot);
+    rerenderButton.setEnabled (rendering || (e != nullptr && e->hasSnapshot && e->hasGesture));
+    rerenderButton.setButtonText (rendering ? "Cancel render" : "Re-render");
     playButton.setButtonText (e != nullptr && previewFile == e->file && preview.isPlaying() ? "Stop" : "Play");
 }
 
@@ -345,6 +370,7 @@ void CapturesPanel::renameSelected()
         if (file.moveFileTo (target))
         {
             if (snapshot.existsAsFile()) snapshot.moveFileTo (snapshotFor (target));
+            if (Gesture::fileFor (file).existsAsFile()) Gesture::fileFor (file).moveFileTo (Gesture::fileFor (target));
             if (stems.isDirectory())
             {
                 // The stems follow: "<old> A.wav" becomes "<new> A.wav", in "<new> stems".
@@ -369,6 +395,7 @@ void CapturesPanel::deleteSelected()
     if (file.moveToTrash())
     {
         if (snapshot.existsAsFile()) snapshot.moveToTrash();
+        if (Gesture::fileFor (file).existsAsFile()) Gesture::fileFor (file).moveToTrash();
         if (stems.isDirectory()) stems.moveToTrash();
         if (showStatus) showStatus ("Moved " + file.getFileName() + " (with its stems and snapshot) to the bin.");
     }
@@ -413,7 +440,9 @@ void CapturesPanel::resized()
     const int w1 = row1.getWidth() / 4;
     for (auto* b : { &playButton, &renameButton, &revealButton, &deleteButton })
         b->setBounds (row1.removeFromLeft (w1).reduced (2, 0));
-    restoreButton.setBounds (row2.removeFromLeft (row2.getWidth() * 3 / 5).reduced (2, 0));
+    const int w2 = row2.getWidth() / 3;
+    restoreButton.setBounds (row2.removeFromLeft (w2 + 20).reduced (2, 0));
+    rerenderButton.setBounds (row2.removeFromLeft (w2).reduced (2, 0));
     folderButton.setBounds (row2.reduced (2, 0));
 }
 

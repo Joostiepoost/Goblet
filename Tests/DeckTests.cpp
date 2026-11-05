@@ -18,6 +18,9 @@
 //    a reversed range, and Pickup.
 // 5e. Capture: the stems add up to the sum sample for sample, whatever the
 //    plugin latencies; the tail runs on after the decks stop, then ends.
+// 5f. Re-render: a take with MIDI, mouse moves, mute, reverse, a deck stopped
+//    and restarted, replayed from its gesture through a second mixer, comes
+//    out identical at the same quality.
 // 6. CPU: time to produce 1 s of stereo output per deck, per preset, at the
 //    rate ratios that occur in practice.
 
@@ -26,6 +29,9 @@
 #include "../Source/Engine/SourceFile.h"
 #include "../Source/Engine/DeckPlayer.h"
 #include "../Source/Engine/Mixer.h"
+#include "../Source/UI/TakeRenderer.h"
+#include "../Source/UI/CapturesPanel.h"
+#include "../Source/Engine/CaptureRecorder.h"
 
 #include <chrono>
 #include <cmath>
@@ -44,9 +50,10 @@ class DelayPlugin : public juce::AudioProcessor
 public:
     DelayPlugin (int latencySamples, float g)
         : AudioProcessor (BusesProperties().withInput ("In", juce::AudioChannelSet::stereo()).withOutput ("Out", juce::AudioChannelSet::stereo())),
-          latency (latencySamples), gain (g)
+          latency (latencySamples)
     {
         setLatencySamples (latency);
+        addParameter (gainParam = new juce::AudioParameterFloat (juce::ParameterID { "gain", 1 }, "Gain", 0.0f, 1.0f, g));
     }
 
     const juce::String getName() const override             { return "Test delay"; }
@@ -60,7 +67,7 @@ public:
             for (int ch = 0; ch < 2; ++ch)
             {
                 line[(size_t) (ch * len + pos)] = b.getSample (ch, i);
-                b.setSample (ch, i, gain * line[(size_t) (ch * len + (pos + 1) % len)]);
+                b.setSample (ch, i, gainParam->get() * line[(size_t) (ch * len + (pos + 1) % len)]);
             }
             pos = (pos + 1) % len;
         }
@@ -80,7 +87,7 @@ public:
 
 private:
     int latency;
-    float gain;
+    juce::AudioParameterFloat* gainParam = nullptr;
     std::vector<float> line;
     int pos = 0;
 };
@@ -109,6 +116,17 @@ std::shared_ptr<const SourceFile> noiseFile (double rate, double seconds, int se
 
 // Runs a deck for `seconds` at `rate`, calling `atBlock` before each block
 // with the time in seconds; returns the left channel.
+// A capture stream kept in memory.
+struct MemorySink : Mixer::Writer
+{
+    std::vector<float> l, r;
+    void write (const float* const* ch, int n) override
+    {
+        l.insert (l.end(), ch[0], ch[0] + n);
+        r.insert (r.end(), ch[1], ch[1] + n);
+    }
+};
+
 std::vector<float> run (DeckPlayer& d, double rate, double seconds, Quality q,
                         std::function<void (double)> atBlock = {}, int block = 64)
 {
@@ -348,7 +366,7 @@ int main (int argc, char* argv[])
         line ("## Mute and solo");
         line ("");
         const double rate = 48000.0;
-        auto src = sineFile (rate, 1.0, 1000.0, 0.25, 0.5 * pi);
+        auto src = sineFile (rate, 2.0, 1000.0, 0.25, 0.5 * pi);   // longer than the run: no loop seam in it
         auto runMixer = [&] (Mixer& m, double seconds, std::function<void (double)> atBlock)
         {
             std::vector<float> l ((size_t) (seconds * rate), 0.0f), r (l.size(), 0.0f);
@@ -633,25 +651,8 @@ int main (int argc, char* argv[])
         m.setFaderPosition (0, Mixer::faderDbToPosition (-6.0f));
         m.setTrimDb (1, 3.0f);
 
-        juce::TimeSliceThread thread ("test writer");
-        thread.startThread();
-        juce::File dir = outDir.getChildFile ("capture-test");
-        dir.deleteRecursively();
-        dir.createDirectory();
-        std::array<std::unique_ptr<Mixer::Writer>, Mixer::numStreams> writers;
-        std::array<Mixer::Writer*, Mixer::numStreams> raw {};
-        const char* names[] = { "sum.wav", "A.wav", "B.wav" };
-        for (int i = 0; i < 3; ++i)
-        {
-            auto f = dir.getChildFile (names[i]);
-            std::unique_ptr<juce::OutputStream> out (f.createOutputStream().release());
-            juce::WavAudioFormat wav;
-            auto options = juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (2).withBitsPerSample (32)
-                                                            .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-            auto w = wav.createWriterFor (out, options);
-            writers[(size_t) i] = std::make_unique<Mixer::Writer> (w.release(), thread, 1 << 17);
-            raw[(size_t) i] = writers[(size_t) i].get();
-        }
+        std::array<MemorySink, 3> sinks;
+        std::array<Mixer::Writer*, Mixer::numStreams> raw { &sinks[0], &sinks[1], &sinks[2], nullptr };
 
         // One block first, so the latencies are known (as they are long before anyone presses Rec).
         std::vector<float> l (256), r (256);
@@ -669,19 +670,14 @@ int main (int argc, char* argv[])
             if (m.getCaptureState() == Mixer::CaptureState::finished) { finishedAt = blocks; break; }
         }
         m.stopCapture();
-        for (auto& w : writers) w = nullptr;
-        thread.stopThread (2000);
 
-        juce::AudioFormatManager fm;
-        fm.registerBasicFormats();
-        auto readAll = [&] (const char* name)
+        auto toBuffer = [] (const MemorySink& k)
         {
-            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dir.getChildFile (name)));
-            juce::AudioBuffer<float> b (2, rd != nullptr ? (int) rd->lengthInSamples : 0);
-            if (rd != nullptr) rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+            juce::AudioBuffer<float> b (2, (int) k.l.size());
+            for (int i = 0; i < b.getNumSamples(); ++i) { b.setSample (0, i, k.l[(size_t) i]); b.setSample (1, i, k.r[(size_t) i]); }
             return b;
         };
-        auto sum = readAll ("sum.wav"), a = readAll ("A.wav"), b = readAll ("B.wav");
+        auto sum = toBuffer (sinks[0]), a = toBuffer (sinks[1]), b = toBuffer (sinks[2]);
         const int n = std::min ({ sum.getNumSamples(), a.getNumSamples(), b.getNumSamples() });
         double diff = 0.0, level = 0.0;
         for (int ch = 0; ch < 2; ++ch)
@@ -701,7 +697,186 @@ int main (int argc, char* argv[])
         line ("- The tail: the decks stopped at block " + juce::String (stoppedAt) + ", the capture ended at block " + juce::String (finishedAt)
               + " (" + juce::String ((finishedAt - stoppedAt) * 256.0 / rate * 1000.0, 0) + " ms later: the plugins' delay, the stop ramp and 0.3 s of silence).");
         line ("");
-        dir.deleteRecursively();
+    }
+
+    //== 5f. Re-render ========================================================
+    {
+        line ("## Re-render from the gesture");
+        line ("");
+        const double rate = 48000.0;
+        auto noise = noiseFile (44100.0, 0.7, 41);      // a rate ratio other than 1: the sinc player at work
+        auto sine = sineFile (rate, 0.9, 330.0, 0.3);
+        auto tone = sineFile (rate, 0.4, 880.0, 0.2, 0.3);
+
+        // Builds a mixer as the take's snapshot would: files, fragments, plugins.
+        auto build = [&] (Mixer& m, Quality q)
+        {
+            m.prepare (rate, 256);
+            m.setQuality (q);
+            m.deck (0).setSource (noise);
+            m.deck (1).setSource (sine);
+            m.deck (1).setFragment (4800, 30000);
+            m.deck (2).setSource (tone);
+            std::unique_ptr<juce::AudioProcessor> replaced;
+            juce::String err;
+            m.chain (Mixer::preChain (0)).insert (0, std::make_unique<DelayPlugin> (300, 0.8f), replaced, err);
+            m.chain (Mixer::postChain (1)).insert (1, std::make_unique<DelayPlugin> (64, 1.0f), replaced, err);
+            m.chain (Mixer::sumChain).insert (0, std::make_unique<DelayPlugin> (128, 1.0f), replaced, err);
+        };
+
+        // The live take: MIDI on fader B and on the plugin's gain, mouse moves, mute, reverse, stop and start.
+        Mixer live;
+        build (live, Quality::Max);
+        MidiMapping fader, param;
+        fader.row = 0; fader.cc = 30; fader.target.kind = MidiTarget::Kind::fader; fader.target.deck = 1;
+        param.row = 1; param.cc = 31; param.smoothMs = 40.0f; param.target.kind = MidiTarget::Kind::plugin;
+        param.target.chain = Mixer::preChain (0); param.target.slot = 0; param.target.index = 0;
+        live.getMidi().setMappings ({ fader, param });
+
+        std::array<MemorySink, 4> liveSinks;
+        std::array<Mixer::Writer*, Mixer::numStreams> liveRaw { &liveSinks[0], &liveSinks[1], &liveSinks[2], &liveSinks[3] };
+        std::vector<float> l (256), r (256);
+        float* outs[2] = { l.data(), r.data() };
+        live.process (outs, 2, 256);        // MIDI sees its controllers' starting values
+        live.playAll();
+        for (int b = 0; b < 20; ++b) live.process (outs, 2, 256);   // decks already playing when Rec is pressed
+
+        std::array<int, Mixer::numStreams> skips { live.getTotalLatency(), live.getAlignedLatency(), live.getAlignedLatency(), live.getAlignedLatency() };
+        live.startCapture (liveRaw, skips, 30.0);
+        Gesture gesture;
+        gesture.sampleRate = rate;
+        GestureEvent buffer[512];
+        const int liveBlocks = 600;           // 3.2 s, then cut (as Rec pressed again)
+        for (int b = 0; b < liveBlocks; ++b)
+        {
+            if (b % 3 == 0) live.getCcTable().set (1, 30, 64 + (int) (50.0 * std::sin (b * 0.05)));
+            if (b % 2 == 0) live.getCcTable().set (1, 31, 64 + (int) (60.0 * std::sin (b * 0.031)));
+            if (b == 80)  live.setFaderPosition (0, 0.6f);                    // a mouse move
+            if (b == 120) live.setMute (2, true);
+            if (b == 200) live.setMute (2, false);
+            if (b == 150) live.deck (1).setReverse (true);
+            if (b == 260) live.deck (0).stop();
+            if (b == 330) live.deck (0).play();
+            if (b == 400) live.setTrimDb (2, -9.0f);
+            if (b == 450) live.chain (Mixer::postChain (1)).setBypass (1, true);
+            if (b == 500) live.setSolo (1, true);
+            live.process (outs, 2, 256);
+            for (int n; (n = live.readGesture (buffer, 512)) > 0;) gesture.events.insert (gesture.events.end(), buffer, buffer + n);
+        }
+        live.cutCapture();
+        live.process (outs, 2, 256);
+        live.stopCapture();
+        for (int n; (n = live.readGesture (buffer, 512)) > 0;) gesture.events.insert (gesture.events.end(), buffer, buffer + n);
+        gesture.length = live.getGestureLength();
+
+        // Through a file and back, as the app does.
+        const auto gfile = outDir.getChildFile ("test.gesture");
+        gesture.writeTo (gfile);
+        Gesture loaded;
+        loaded.readFrom (gfile);
+        gfile.deleteFile();
+
+        auto compare = [] (const MemorySink& x, const MemorySink& y, double& diff, double& peak)
+        {
+            diff = 0.0; peak = 0.0;
+            const size_t n = std::min (x.l.size(), y.l.size());
+            for (size_t i = 0; i < n; ++i)
+            {
+                diff = std::max ({ diff, (double) std::abs (x.l[i] - y.l[i]), (double) std::abs (x.r[i] - y.r[i]) });
+                peak = std::max (peak, (double) std::abs (x.l[i]));
+            }
+            return x.l.size() == y.l.size();
+        };
+
+        int counts[GestureEvent::numKinds] = {};
+        for (auto& e : loaded.events) ++counts[e.kind];
+        line ("A 3.2 s take: three decks (one 44.1 kHz file on the 48 kHz device), test plugins with latency on deck A, after fader B "
+              "and on the sum. The decks were already playing when Rec was pressed. During the take: a CC moving fader B, a CC moving "
+              "the gain of deck A's plugin (40 ms smoothing), a mouse move on fader A, mute on C, reverse on B, A stopped and started "
+              "again, a trim change, a bypass and a solo; then Rec again (cut). The gesture holds " + juce::String ((int) loaded.events.size())
+              + " events (" + juce::String (counts[GestureEvent::fader]) + " fader, " + juce::String (counts[GestureEvent::parameter])
+              + " plugin parameter, " + juce::String (counts[GestureEvent::start] + counts[GestureEvent::stop]) + " start/stop) over "
+              + juce::String ((double) loaded.length / rate, 2) + " s.");
+        line ("");
+        line ("| Re-render | Stream | Same length | Largest difference | Peak |");
+        line ("| --- | --- | --- | --- | --- |");
+
+        for (auto q : { Quality::Max, Quality::Render })
+        {
+            Mixer offline;
+            build (offline, q);
+            offline.setMidiEnabled (false);
+            std::array<MemorySink, 4> sinks;
+            std::array<Mixer::Writer*, Mixer::numStreams> raw { &sinks[0], &sinks[1], &sinks[2], &sinks[3] };
+            TakeRenderer::renderGesture (offline, loaded, raw);
+            const char* names[] = { "sum", "stem A", "stem B", "stem C" };
+            for (int k = 0; k < 4; ++k)
+            {
+                double diff, peak;
+                const bool same = compare (liveSinks[(size_t) k], sinks[(size_t) k], diff, peak);
+                line ("| " + juce::String (q == Quality::Max ? "Max (as live)" : "Render") + " | " + names[k] + " | "
+                      + (same ? "yes" : "NO (" + juce::String ((int) sinks[(size_t) k].l.size()) + " vs " + juce::String ((int) liveSinks[(size_t) k].l.size()) + ")")
+                      + " | " + juce::String (diff, 9) + " | " + juce::String (peak, 3) + " |");
+            }
+        }
+        line ("");
+        // The whole path the Re-render button takes: snapshot and gesture files on disk, the second
+        // mixer built from them (no plugins here: the test plugins cannot be loaded by description),
+        // the new take written beside the old one.
+        {
+            const auto dir = outDir.getChildFile ("rerender-test");
+            dir.deleteRecursively();
+            dir.createDirectory();
+            auto writeWav32 = [&] (const juce::File& f, const SourceFile& src)
+            {
+                juce::String e;
+                auto w = CaptureRecorder::createWavWriter (f, src.sampleRate, e);
+                const float* ch[2] = { src.audio.getReadPointer (0), src.audio.getReadPointer (1) };
+                w->writeFromFloatArrays (ch, 2, (int) src.length());
+            };
+            writeWav32 (dir.getChildFile ("noise.wav"), *noise);
+            writeWav32 (dir.getChildFile ("sine.wav"), *sine);
+            const auto takeFile = dir.getChildFile ("Goblet test take.wav");
+            writeWav32 (takeFile, *sine);    // stands for the live sum
+            juce::PropertySet snap;
+            snap.setValue ("deckA.file", dir.getChildFile ("noise.wav").getFullPathName());
+            snap.setValue ("deckB.file", dir.getChildFile ("sine.wav").getFullPathName());
+            snap.setValue ("deckB.in", "4800");
+            snap.setValue ("deckB.out", "30000");
+            snap.createXml ("GOBLET_SNAPSHOT")->writeTo (dir.getChildFile ("Goblet test take.goblet"));
+            loaded.writeTo (Gesture::fileFor (takeFile));
+
+            juce::AudioPluginFormatManager pf;
+            juce::AudioFormatManager af;
+            af.registerBasicFormats();
+            TakeRenderer renderer (pf, af);
+            juce::File result;
+            juce::String renderError = "(no answer)";
+            renderer.onFinished = [&] (const juce::File& f, const juce::String& e) { result = f; renderError = e; };
+            juce::String startError;
+            const bool started = renderer.start (takeFile, Quality::Render, startError);
+            for (int i = 0; i < 600 && renderer.isBusy(); ++i)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+            juce::String lengths;
+            for (auto& f : { result, CaptureRecorder::stemFile (result, 0), CaptureRecorder::stemFile (result, 1), CaptureRecorder::stemFile (result, 2) })
+            {
+                std::unique_ptr<juce::AudioFormatReader> rd (af.createReaderFor (f));
+                lengths << f.getFileName() << ": " << (rd != nullptr ? juce::String ((int) rd->lengthInSamples) + " samples" : juce::String ("none")) << "; ";
+            }
+            line ("- The Re-render button's path (snapshot and gesture read from disk, a new take written): "
+                  + juce::String (started && result.existsAsFile() && renderError.isEmpty() ? "done. " : "FAILED (" + startError + renderError + "). ")
+                  + lengths.dropLastCharacters (2) + (CapturesPanel::snapshotFor (result).existsAsFile() ? "; the snapshot was copied." : "; NO snapshot."));
+            line ("");
+            dir.deleteRecursively();
+        }
+
+        line ("At the live take's quality the re-render is identical to it, sum and stems, even though the decks were already "
+              "playing when Rec was pressed (the gesture keeps where each deck, crossfade and gain ramp was at that moment). "
+              "At Render quality only what goes through the sinc player differs: deck A's 44.1 kHz file, and the crossfades "
+              "of the others. With real plugins the first moments can still differ if the decks were already playing: a reverb "
+              "in the second mixer starts without the tail it had in the live one.");
+        line ("");
     }
 
     //== 6. CPU ================================================================

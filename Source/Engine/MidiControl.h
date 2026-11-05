@@ -160,6 +160,15 @@ public:
     //== Audio thread ========================================================
     void process (Mixer& mixer, const CcTable& table, int numSamples, double sampleRate) noexcept;
 
+    template <typename Fn>
+    void forEachPluginTarget (Fn&& fn) const noexcept
+    {
+        if (auto* set = current.load (std::memory_order_acquire))
+            for (auto& m : set->mappings)
+                if (m.enabled && m.target.kind == MidiTarget::Kind::plugin)
+                    fn (m.target);
+    }
+
 private:
     struct Set { std::vector<MidiMapping> mappings; };
 

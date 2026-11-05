@@ -38,6 +38,7 @@ public:
     void restoreFrom (const juce::PropertySet&, bool removeCurrentFirst);
     void removeAll();
     bool isLoading() const noexcept   { return pendingLoads > 0; }
+    juce::AudioPluginFormatManager& getFormats() noexcept   { return formats; }
     void closeAllEditors();
 
     std::function<void()> onChanged;                       // repaint the slot buttons
