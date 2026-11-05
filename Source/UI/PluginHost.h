@@ -31,9 +31,13 @@ public:
     void openEditor (int chain, int slot);
     void showScanner();
 
-    // All chains as XML (for the settings file), and back.
+    // All chains as XML (for the settings file or a snapshot), and back.
     void save();                      // into the settings, now
     void restore();                   // from the settings, at start-up
+    void writeTo (juce::PropertySet&) const;
+    void restoreFrom (const juce::PropertySet&, bool removeCurrentFirst);
+    void removeAll();
+    bool isLoading() const noexcept   { return pendingLoads > 0; }
     void closeAllEditors();
 
     std::function<void()> onChanged;                       // repaint the slot buttons

@@ -1,6 +1,6 @@
 # Goblet deck player: measurements (step 1)
 
-Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 1:59:27pm.
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 2:41:52pm.
 
 ## Passthrough at equal rates
 
@@ -82,14 +82,22 @@ The fader law (position 0..1, as a 7-bit controller sends it):
 - One CC on faders A and B, B reversed (a crossfade): CC 0: A silence dB, B 12.0 dB; CC 64: A -11.8 dB, B -12.3 dB; CC 127: A 12.0 dB, B silence dB.
 - Pickup, fader C at 0.800 after a mouse move, controller moving 20, 60, 110, 90, 40 (positions as CC/127): 20 -> 0.800 (waiting); 60 -> 0.800 (waiting); 110 -> 0.866; 90 -> 0.709; 40 -> 0.315. It ignores the controller until it passes 0.8, then follows.
 
+## Capture: sum and stems
+
+Deck A plays noise through a test plugin with 10 ms latency, fader at -6 dB; deck B plays a sine once, trim +3 dB; the sum has a test plugin with 5 ms latency. Rec, then both decks stop after 1.6 s.
+
+- Files: sum 91696 samples, stem A 91936, stem B 91936.
+- Largest difference between the sum and stem A + stem B: 0.000000030 (peak level 0.779): the stems add up to the sum, sample for sample.
+- The tail: the decks stopped at block 300, the capture ended at block 360 (320 ms later: the plugins' delay, the stop ramp and 0.3 s of silence).
+
 ## CPU
 
 Time for one deck to produce 1 s of stereo output, as a share of one core of this machine (white noise, looped). Three decks cost about three times as much; all three run on the same audio thread.
 
 | Preset | 48.0 on 48.0 kHz (×1.000) | 44.1 on 48.0 kHz (×0.919) | 48.0 on 44.1 kHz (×1.088) | 44.1 on 96.0 kHz (×0.459) | 48.0 on 96.0 kHz (×0.500) | 96.0 on 48.0 kHz (×2.000) | 96.0 on 44.1 kHz (×2.177) | 192.0 on 48.0 kHz (×4.000) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| High | 0.0% | 1.3% | 3.9% | 2.8% | 2.5% | 7.8% | 7.8% | 15.2% |
-| Very high | 0.0% | 2.3% | 7.2% | 4.3% | 4.4% | 14.0% | 15.1% | 30.0% |
-| Max | 0.0% | 3.2% | 9.3% | 6.5% | 6.2% | 19.3% | 19.6% | 46.0% |
-| Render | 0.0% | 4.8% | 15.1% | 12.6% | 12.2% | 32.1% | 29.2% | 59.5% |
+| High | 0.0% | 1.4% | 4.2% | 2.9% | 3.4% | 9.4% | 8.5% | 22.6% |
+| Very high | 0.0% | 2.4% | 7.6% | 4.8% | 4.5% | 14.7% | 14.6% | 29.2% |
+| Max | 0.0% | 3.3% | 10.3% | 6.8% | 6.5% | 20.2% | 19.8% | 40.1% |
+| Render | 0.0% | 5.0% | 16.0% | 10.3% | 9.6% | 31.3% | 31.1% | 68.2% |
 

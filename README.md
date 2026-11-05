@@ -39,11 +39,33 @@ Other options:
 | 1 | One deck: source strip, fragment, loop, reverse, crossfade, quality presets, transport; measurements | done |
 | 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | done |
 | 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | done |
-| 4 | Trims and faders (+12 dB headroom), MIDI: mapping window, smoothing, Jump/Pickup, reversed ranges, 14-bit switch | testing |
-| 5 | Live capture: sum and stems, tail, captures panel, snapshots | |
+| 4 | Trims and faders (+12 dB headroom), MIDI: mapping window, smoothing, Jump/Pickup, reversed ranges, 14-bit switch | done |
+| 5 | Live capture: sum and stems, tail, captures panel, snapshots | testing |
 | 6 | Gesture re-render: replay a take's CCs offline at Render quality | |
 
 The full design is in the Goblet project proposal.
+
+## Using step 5: live capture
+
+- **Rec** (or **R**) starts a take. If no deck is playing, it starts them all (as Play all). A take is:
+  - `Goblet <date> <time>.wav`: the **sum**, what you hear, after the sum's slots;
+  - `<take> stems/<take> A.wav`, `B.wav`, `C.wav`: one **stem** per deck that has a file, taken just before the sum (after the deck's plugins, fader, mute and solo), so the stems add up exactly to the sum before the sum's slots;
+  - `<take>.goblet`: the **snapshot**, the whole session at the moment you pressed Rec (files, fragments, plugins with their settings, trims, faders, mute/solo, MIDI mappings, quality).
+  All files are 32-bit float WAV at the device's rate, in **Music/Goblet Captures**.
+- **Alignment**: each file skips its own latency at the start, so in Reaper the sum and the stems start on the same sample, whatever plugins you use.
+- **The tail**: when the last deck stops, the capture runs on until the sound has died away (below -90 dBFS for 0.3 s, at most 30 s), so reverb tails are kept. If you start a deck again in the meantime, the take simply goes on. **Rec** again ends the take at once. While recording, the button shows the take's running time.
+- **Captures panel** (bottom of the window), newest first:
+  - double-click (or **Play**) to listen; it plays on top of whatever is running and is not captured itself;
+  - the **triangle** unfolds a take to show its stems, which you can listen to and drag separately;
+  - **drag** a take into Reaper or the Finder; **Shift-drag** a take to drag the sum and all its stems at once;
+  - **Rename...** renames the take, its stems and its snapshot together; **Delete** moves all of them to the bin; **Show** reveals the file in the Finder; **Open folder** opens Goblet Captures;
+  - **Restore snapshot...** brings back the session that produced the take (after asking, since it replaces the current one).
+
+**Worth testing**:
+- A take with all three decks and plugins with latency: drag it into Reaper with Shift, mute the sum and play the stems: they should sound exactly like the sum (minus what the sum's slots do).
+- The tail: a long reverb on a deck, stop the decks, and check that the take keeps the whole tail.
+- Restore snapshot after changing files, plugins and faders.
+- Rename and Delete: the stems and the snapshot follow.
 
 ## Using step 4: trims, faders and MIDI
 
@@ -89,9 +111,9 @@ The full design is in the Goblet project proposal.
 
 ## Using step 2: three decks, meters, mute and solo, audio on/off
 
-- **Decks B and C** work exactly like deck A (see step 1 below). Keys: **1**, **2**, **3** play or stop a deck.
+- **Decks B and C** work exactly like deck A (see step 1 below). Keys: **A**, **B**, **C** play or stop a deck.
 - **Play all** (or **Space**) starts every deck that has a file in the same sample.
-- **M** mutes a deck (**Shift-1/2/3**), **S** solos it (**Option-1/2/3**). With any deck soloed, only soloed decks are heard; mute wins over solo. Both ramp over 5 ms, so they never click. A deck silenced by mute or by another deck's solo shows its letter dimmed.
+- **M** mutes a deck (**Shift-A/B/C**), **S** solos it (**Option-A/B/C**). With any deck soloed, only soloed decks are heard; mute wins over solo. Both ramp over 5 ms, so they never click. A deck silenced by mute or by another deck's solo shows its letter dimmed.
 - **Mixer column**: a fader (step 4) and a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read after the deck's plugins and *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in.
 - **Sum meter** (top right): what you hear. The red lamp lights when the sum reaches 0 dBFS and stays lit until you click it.
 - **Audio on / Audio off** (**Shift-Cmd-A**): off closes the audio device, so Goblet uses no CPU while it sits in the background. The files and settings stay loaded. Play, Play all or Space turn audio back on.
@@ -110,7 +132,7 @@ The window already has its final layout: the decks on the left, the mixer on the
 - **Load a file** into a deck: *Open...*, or drop a WAV or AIFF file on the deck.
 - **The source strip** shows the whole file. Drag the in or out flag to move it, or drag anywhere else to mark a new fragment. The dashed line is where the deck is reading.
 - **In / Out**: double-click to type (`1:23.456`, `83.456` or `83`).
-- **Play** (or key **1**) starts the deck at the beginning of its fragment; **Stop** fades it out over 3 ms and returns it to the start. A 3 ms fade-in at the start means a fragment that begins mid-waveform doesn't click.
+- **Play** (or key **A**, **B**, **C**) starts the deck at the beginning of its fragment; **Stop** fades it out over 3 ms and returns it to the start. A 3 ms fade-in at the start means a fragment that begins mid-waveform doesn't click.
 - **Loop** on: the fragment repeats, with the seam crossfade. Off: it plays once and fades out over the last 3 ms before the out point.
 - **Rev** plays the fragment backwards; switching while playing crossfades between the two directions. Reversed, a deck starts at its out point.
 - **Crossfade**: length (0–200 ms) and shape (Equal power, Linear, S-curve, Bezier with its tension), used at the loop seam, when Play restarts a deck that is already playing, and when switching Rev.
@@ -135,7 +157,7 @@ Everything is remembered between sessions: the file, fragment, loop, reverse, cr
 2. The playhead stays inside the fragment, with reverse switched while playing.
 3. Loop seam and reverse switch: no clicks with a crossfade.
 4. Start, stop and play once: no clicks from the 3 ms ramps.
-5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing. Trim, faders and MIDI: the fader law, trim and fader levels, a slow 7-bit sweep without zipper steps, 14-bit, a crossfade from one CC, and Pickup.
+5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing. Trim, faders and MIDI: the fader law, trim and fader levels, a slow 7-bit sweep without zipper steps, 14-bit, a crossfade from one CC, and Pickup. Capture: with plugin latencies on a deck and on the sum, the stems add up to the sum sample for sample; the tail ends the take after the decks stop.
 6. CPU per deck, per preset, at the rate ratios that occur in practice.
 
 Please commit `report.md` with GitHub Desktop so I can read your M4's CPU table. `report-cloud-test-machine.md` holds the same report from the slower machine the code was written on: there all checks pass, and the costliest realistic case (a 96 kHz file on a 44.1 kHz device at Render) takes about 35% of one core per deck. The M4 should need roughly two thirds of that. In the reverse-switch column, equal power and Bezier show 1.32 and 1.28 rather than 1.00: that is the expected level bump of those shapes on correlated material during the crossfade, not a click.

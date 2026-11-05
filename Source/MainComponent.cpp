@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 4: trims, faders, MIDI mappings.
+// MainComponent.cpp — step 5: live capture and the captures panel.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -26,6 +26,12 @@ MainComponent::MainComponent()
     stopAllButton.setButtonText (juce::String::fromUTF8 ("\xe2\x96\xa0"));
     stopAllButton.setTooltip ("Stop every deck (Space while playing)");
     stopAllButton.onClick = [this] { mixer.stopAll(); };
+    recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f Rec"));
+    recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc0392b));
+    recordButton.setTooltip ("Capture what you hear (R): the sum and a stem per deck, with a snapshot of the session. "
+                             "Starts every deck if none is playing. After the last deck stops, the capture runs on until the "
+                             "tail has died away; Rec again ends it at once.");
+    recordButton.onClick = [this] { toggleRecord(); };
     audioButton.setTooltip ("Audio device, sample rate and buffer size");
     audioButton.onClick = [this] { showAudioSettings(); };
     audioOnButton.setClickingTogglesState (true);
@@ -50,7 +56,7 @@ MainComponent::MainComponent()
         if (! restoring) saveSettings();
     };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &pluginsButton, &midiButton, &qualityBox })
+    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &recordButton, &audioButton, &audioOnButton, &pluginsButton, &midiButton, &qualityBox })
     {
         c->setWantsKeyboardFocus (false);
         addAndMakeVisible (c);
@@ -69,6 +75,12 @@ MainComponent::MainComponent()
 
     addAndMakeVisible (sumMeter);
     addAndMakeVisible (mixerPanel);
+    capturesPanel = std::make_unique<CapturesPanel> (mixer.getPreview());
+    capturesPanel->showStatus = [this] (const juce::String& t) { setStatus (t); };
+    capturesPanel->onRestoreSnapshot = [this] (const juce::File& f) { restoreSnapshot (f); };
+    capturesPanel->setFolder (capturesFolder());
+    addAndMakeVisible (*capturesPanel);
+    recorder.onFinished = [this] (const juce::File& f) { captureFinished (f); };
     mixerPanel.onFaderMoved = [this] { if (! restoring) saveSettings(); };
     midiMappings.onChanged = [this] { if (! restoring) saveSettings(); };
 
@@ -111,8 +123,9 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    if (recorder.isActive()) recorder.cut();
+    capturesPanel = nullptr;
     saveSettings();
-    pluginHost.save();
     pluginHost.closeAllEditors();
     midiWindow = nullptr;
     deviceManager.removeMidiInputDeviceCallback ({}, &mixer.getCcTable());
@@ -214,17 +227,27 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    if (key.getKeyCode() == 'R' || key.getKeyCode() == 'r')
+    {
+        if (! mods.isCommandDown() && ! mods.isCtrlDown() && ! mods.isAltDown() && ! mods.isShiftDown())
+        {
+            toggleRecord();
+            return true;
+        }
+    }
+
     if (key == juce::KeyPress ('m', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
     {
         showMidiWindow();
         return true;
     }
 
-    // 1-3: play/stop a deck; Shift: mute; Option: solo.
-    const int code = key.getKeyCode();
-    if (code >= '1' && code <= '3' && ! mods.isCommandDown() && ! mods.isCtrlDown())
+    // A, B, C: play/stop a deck; Shift: mute; Option: solo. Letters rather than
+    // numbers, so they work without modifiers on an AZERTY keyboard too.
+    const int code = juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) key.getKeyCode());
+    if (code >= 'A' && code < 'A' + Mixer::numDecks && ! mods.isCommandDown() && ! mods.isCtrlDown())
     {
-        auto& d = *decks[(size_t) (code - '1')];
+        auto& d = *decks[(size_t) (code - 'A')];
         if (mods.isShiftDown())     d.toggleMute();
         else if (mods.isAltDown())  d.toggleSolo();
         else                        d.togglePlay();
@@ -263,8 +286,12 @@ void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
 //==============================================================================
 void MainComponent::loadSettings()
 {
+    readSession (*properties.getUserSettings(), false);
+}
+
+void MainComponent::readSession (const juce::PropertySet& s, bool replacePlugins)
+{
     const juce::ScopedValueSetter<bool> svs (restoring, true);
-    auto& s = *properties.getUserSettings();
 
     qualityBox.setSelectedId (juce::jlimit (0, numQualities - 1, s.getIntValue ("quality", (int) Quality::Max)) + 1, juce::dontSendNotification);
     mixer.setQuality ((Quality) (qualityBox.getSelectedId() - 1));
@@ -274,17 +301,107 @@ void MainComponent::loadSettings()
 
     auto xml = s.getXmlValue ("midiMappings");
     midiMappings.restore (xml.get());
+
+    if (replacePlugins)
+        pluginHost.restoreFrom (s, true);
 }
 
-void MainComponent::saveSettings()
+void MainComponent::writeSession (juce::PropertySet& s)
 {
-    auto& s = *properties.getUserSettings();
     s.setValue ("quality", qualityBox.getSelectedId() - 1);
     for (auto& d : decks)
         d->writeState (s);
     if (auto xml = midiMappings.createXml())
         s.setValue ("midiMappings", xml.get());
+    if (! pluginHost.isLoading())
+        pluginHost.writeTo (s);
+}
+
+void MainComponent::saveSettings()
+{
+    writeSession (*properties.getUserSettings());
     properties.saveIfNeeded();
+}
+
+//==============================================================================
+juce::File MainComponent::capturesFolder() const
+{
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Goblet Captures");
+}
+
+void MainComponent::toggleRecord()
+{
+    if (recorder.isActive()) { recorder.cut(); return; }
+    if (! audioEnabled) setAudioEnabled (true);
+
+    // A new take: "Goblet 2026-11-05 143012.wav", its stems and its snapshot.
+    const auto folder = capturesFolder();
+    folder.createDirectory();
+    const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H%M%S");
+    auto file = folder.getChildFile ("Goblet " + stamp + ".wav");
+    for (int n = 2; file.exists(); ++n)
+        file = folder.getChildFile ("Goblet " + stamp + " " + juce::String (n) + ".wav");
+
+    std::array<bool, Mixer::numDecks> stems {};
+    for (int i = 0; i < Mixer::numDecks; ++i)
+        stems[(size_t) i] = mixer.deck (i).getSource() != nullptr;
+
+    // The snapshot: the whole session as it is now.
+    {
+        juce::PropertySet snapshot;
+        writeSession (snapshot);
+        if (pluginHost.isLoading()) pluginHost.writeTo (snapshot);
+        if (auto xml = snapshot.createXml ("GOBLET_SNAPSHOT"))
+            xml->writeTo (CapturesPanel::snapshotFor (file));
+    }
+
+    juce::String error;
+    if (! recorder.start (file, stems, 30.0, error))
+    {
+        CapturesPanel::snapshotFor (file).deleteFile();
+        setStatus (error);
+        return;
+    }
+
+    if (! mixer.anyPlaying())
+        mixer.playAll();
+    recordButton.setToggleState (true, juce::dontSendNotification);
+    setStatus ("Capturing " + file.getFileNameWithoutExtension() + ". When the last deck stops, the tail is captured too; R ends it at once.");
+}
+
+void MainComponent::captureFinished (const juce::File& file)
+{
+    recordButton.setToggleState (false, juce::dontSendNotification);
+    recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f Rec"));
+    capturesPanel->setRecording ({}, 0.0, false);
+    capturesPanel->refresh();
+    setStatus ("Captured " + file.getFileNameWithoutExtension() + ".");
+}
+
+void MainComponent::restoreSnapshot (const juce::File& snapshot)
+{
+    auto xml = juce::XmlDocument::parse (snapshot);
+    if (xml == nullptr) { setStatus ("Cannot read " + snapshot.getFileName()); return; }
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
+                                            .withTitle ("Restore snapshot")
+                                            .withMessage ("Go back to the session that produced " + snapshot.getFileNameWithoutExtension()
+                                                          + "? The current files, fragments, plugins, trims, faders and MIDI mappings are replaced.")
+                                            .withButton ("Restore")
+                                            .withButton ("Cancel");
+    juce::AlertWindow::showAsync (options, [safeThis, snapshot] (int result)
+    {
+        if (safeThis == nullptr || result != 1) return;
+        auto doc = juce::XmlDocument::parse (snapshot);
+        if (doc == nullptr) return;
+        juce::PropertySet set;
+        set.restoreFromXml (*doc);
+        safeThis->mixer.stopAll();
+        safeThis->readSession (set, true);
+        safeThis->saveSettings();
+        safeThis->setStatus ("Restored the session of " + snapshot.getFileNameWithoutExtension() + ".");
+    });
 }
 
 void MainComponent::setStatus (const juce::String& text)
@@ -300,6 +417,13 @@ void MainComponent::timerCallback()
         d->refresh();
     mixerPanel.refresh();
     sumMeter.refresh();
+
+    if (recorder.isActive())
+    {
+        const double t = recorder.getSeconds();
+        recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f ") + formatTime (t).dropLastCharacters (2));
+        capturesPanel->setRecording (recorder.getFile(), t, recorder.isInTail());
+    }
 
     // The MIDI button lights briefly when MIDI arrives; new MIDI devices are picked up.
     const auto count = mixer.getCcTable().messageCount();
@@ -364,27 +488,7 @@ void MainComponent::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.08f));
     g.drawHorizontalLine (48, 0.0f, (float) getWidth());
 
-    auto placeholder = [&g] (juce::Rectangle<int> r, const juce::String& title, const juce::String& note)
-    {
-        if (r.isEmpty()) return;
-        const float dashes[] = { 4.0f, 4.0f };
-        auto rf = r.toFloat().reduced (0.5f);
-        juce::Path p;
-        p.addRoundedRectangle (rf, 8.0f);
-        juce::Path dashed;
-        juce::PathStrokeType (1.0f).createDashedStroke (dashed, p, dashes, 2);
-        g.setColour (juce::Colours::white.withAlpha (0.18f));
-        g.fillPath (dashed);
 
-        auto t = r.reduced (16, 12);
-        g.setColour (juce::Colours::white.withAlpha (0.35f));
-        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-        g.drawText (title, t.removeFromTop (22), juce::Justification::topLeft);
-        g.setFont (juce::FontOptions (12.5f));
-        g.drawText (note, t.removeFromTop (18), juce::Justification::topLeft);
-    };
-
-    placeholder (capturesArea, "Captures", "Live capture of the sum and stems: step 5");
 }
 
 void MainComponent::resized()
@@ -395,10 +499,12 @@ void MainComponent::resized()
     playAllButton.setBounds (bar.removeFromLeft (96));
     bar.removeFromLeft (6);
     stopAllButton.setBounds (bar.removeFromLeft (40));
-    bar.removeFromLeft (24);
-    qualityCaption.setBounds (bar.removeFromLeft (60));
+    bar.removeFromLeft (6);
+    recordButton.setBounds (bar.removeFromLeft (96));
+    bar.removeFromLeft (18);
+    qualityCaption.setBounds (bar.removeFromLeft (54));
     bar.removeFromLeft (4);
-    qualityBox.setBounds (bar.removeFromLeft (150));
+    qualityBox.setBounds (bar.removeFromLeft (132));
     bar.removeFromLeft (12);
     audioButton.setBounds (bar.removeFromLeft (80));
     bar.removeFromLeft (6);
@@ -414,7 +520,7 @@ void MainComponent::resized()
     statusLabel.setBounds (r.removeFromBottom (26).reduced (12, 2));
 
     r.reduce (12, 10);
-    capturesArea = r.removeFromBottom (130);
+    capturesPanel->setBounds (r.removeFromBottom (150));
     r.removeFromBottom (12);
     mixerPanel.setBounds (r.removeFromRight (280));
     r.removeFromRight (12);

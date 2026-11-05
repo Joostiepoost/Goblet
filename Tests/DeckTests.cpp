@@ -16,6 +16,8 @@
 // 5d. Trim, faders and MIDI: the fader law, the trim's gain, a CC driving a
 //    fader (7-bit without zipper steps, 14-bit), a crossfade from one CC with
 //    a reversed range, and Pickup.
+// 5e. Capture: the stems add up to the sum sample for sample, whatever the
+//    plugin latencies; the tail runs on after the decks stop, then ends.
 // 6. CPU: time to produce 1 s of stereo output per deck, per preset, at the
 //    rate ratios that occur in practice.
 
@@ -610,6 +612,96 @@ int main (int argc, char* argv[])
                   + row.dropLastCharacters (2) + ". It ignores the controller until it passes 0.8, then follows.");
         }
         line ("");
+    }
+
+    //== 5e. Capture ==========================================================
+    {
+        line ("## Capture: sum and stems");
+        line ("");
+        const double rate = 48000.0;
+        auto noise = noiseFile (rate, 0.5, 31);
+        auto sine = sineFile (rate, 0.5, 440.0, 0.3);
+        Mixer m;
+        m.prepare (rate, 256);
+        m.deck (0).setSource (noise);
+        m.deck (1).setSource (sine);
+        m.deck (1).setLoop (false);
+        std::unique_ptr<juce::AudioProcessor> replaced;
+        juce::String err;
+        m.chain (Mixer::preChain (0)).insert (0, std::make_unique<DelayPlugin> (480, 1.0f), replaced, err);   // deck A: 10 ms
+        m.chain (Mixer::sumChain).insert (0, std::make_unique<DelayPlugin> (240, 1.0f), replaced, err);        // the sum: 5 ms
+        m.setFaderPosition (0, Mixer::faderDbToPosition (-6.0f));
+        m.setTrimDb (1, 3.0f);
+
+        juce::TimeSliceThread thread ("test writer");
+        thread.startThread();
+        juce::File dir = outDir.getChildFile ("capture-test");
+        dir.deleteRecursively();
+        dir.createDirectory();
+        std::array<std::unique_ptr<Mixer::Writer>, Mixer::numStreams> writers;
+        std::array<Mixer::Writer*, Mixer::numStreams> raw {};
+        const char* names[] = { "sum.wav", "A.wav", "B.wav" };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto f = dir.getChildFile (names[i]);
+            std::unique_ptr<juce::OutputStream> out (f.createOutputStream().release());
+            juce::WavAudioFormat wav;
+            auto options = juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (2).withBitsPerSample (32)
+                                                            .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+            auto w = wav.createWriterFor (out, options);
+            writers[(size_t) i] = std::make_unique<Mixer::Writer> (w.release(), thread, 1 << 17);
+            raw[(size_t) i] = writers[(size_t) i].get();
+        }
+
+        // One block first, so the latencies are known (as they are long before anyone presses Rec).
+        std::vector<float> l (256), r (256);
+        float* outs[2] = { l.data(), r.data() };
+        m.process (outs, 2, 256);
+        std::array<int, Mixer::numStreams> skips { m.getTotalLatency(), m.getAlignedLatency(), m.getAlignedLatency(), m.getAlignedLatency() };
+        m.startCapture (raw, skips, 30.0);
+        m.playAll();
+
+        int blocks = 0, stoppedAt = -1, finishedAt = -1;
+        for (; blocks < 2000; ++blocks)
+        {
+            if (blocks == 300) { m.stopAll(); stoppedAt = blocks; }     // 1.6 s: both decks stop
+            m.process (outs, 2, 256);
+            if (m.getCaptureState() == Mixer::CaptureState::finished) { finishedAt = blocks; break; }
+        }
+        m.stopCapture();
+        for (auto& w : writers) w = nullptr;
+        thread.stopThread (2000);
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        auto readAll = [&] (const char* name)
+        {
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dir.getChildFile (name)));
+            juce::AudioBuffer<float> b (2, rd != nullptr ? (int) rd->lengthInSamples : 0);
+            if (rd != nullptr) rd->read (&b, 0, b.getNumSamples(), 0, true, true);
+            return b;
+        };
+        auto sum = readAll ("sum.wav"), a = readAll ("A.wav"), b = readAll ("B.wav");
+        const int n = std::min ({ sum.getNumSamples(), a.getNumSamples(), b.getNumSamples() });
+        double diff = 0.0, level = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < n; ++i)
+            {
+                diff = std::max (diff, (double) std::abs (sum.getSample (ch, i) - a.getSample (ch, i) - b.getSample (ch, i)));
+                level = std::max (level, (double) std::abs (sum.getSample (ch, i)));
+            }
+
+        line ("Deck A plays noise through a test plugin with 10 ms latency, fader at -6 dB; deck B plays a sine once, trim +3 dB; "
+              "the sum has a test plugin with 5 ms latency. Rec, then both decks stop after 1.6 s.");
+        line ("");
+        line ("- Files: sum " + juce::String (sum.getNumSamples()) + " samples, stem A " + juce::String (a.getNumSamples())
+              + ", stem B " + juce::String (b.getNumSamples()) + ".");
+        line ("- Largest difference between the sum and stem A + stem B: " + juce::String (diff, 9) + " (peak level " + juce::String (level, 3)
+              + ")" + (diff < 1.0e-6 ? ": the stems add up to the sum, sample for sample." : ": NOT aligned."));
+        line ("- The tail: the decks stopped at block " + juce::String (stoppedAt) + ", the capture ended at block " + juce::String (finishedAt)
+              + " (" + juce::String ((finishedAt - stoppedAt) * 256.0 / rate * 1000.0, 0) + " ms later: the plugins' delay, the stop ramp and 0.3 s of silence).");
+        line ("");
+        dir.deleteRecursively();
     }
 
     //== 6. CPU ================================================================

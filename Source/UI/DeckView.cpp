@@ -104,7 +104,7 @@ DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f, Plugin
     strip.onFragmentDragEnded = [this] { changed(); };
 
     playButton.setButtonText (playText (false));
-    playButton.setTooltip ("Play this deck from the start of its fragment, or stop it (key " + juce::String (index + 1) + ")");
+    playButton.setTooltip ("Play this deck from the start of its fragment, or stop it (key " + letter() + ")");
     playButton.onClick = [this] { togglePlay(); };
 
     openButton.setTooltip ("Load a WAV or AIFF file into deck " + letter() + " (or drop one on the deck)");
@@ -120,11 +120,11 @@ DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f, Plugin
     reverseButton.onClick = [this] { player.setReverse (reverseButton.getToggleState()); changed(); };
 
     muteButton.setClickingTogglesState (true);
-    muteButton.setTooltip ("Mute deck " + letter() + " (Shift-" + juce::String (index + 1) + "). The deck keeps playing, silently, and its meter keeps moving.");
+    muteButton.setTooltip ("Mute deck " + letter() + " (Shift-" + letter() + "). The deck keeps playing, silently, and its meter keeps moving.");
     muteButton.onClick = [this] { mixer.setMute (index, muteButton.getToggleState()); changed(); };
 
     soloButton.setClickingTogglesState (true);
-    soloButton.setTooltip ("Solo deck " + letter() + " (Option-" + juce::String (index + 1) + "): only soloed decks are heard. Mute wins over solo.");
+    soloButton.setTooltip ("Solo deck " + letter() + " (Option-" + letter() + "): only soloed decks are heard. Mute wins over solo.");
     soloButton.onClick = [this] { mixer.setSolo (index, soloButton.getToggleState()); changed(); };
 
     for (auto* b : { &openButton, &playButton, &muteButton, &soloButton, &loopButton, &reverseButton })
@@ -390,9 +390,18 @@ void DeckView::readState (const juce::PropertySet& s)
         }
         else status (error);
     }
-    else if (file != juce::File())
+    else
     {
-        status ("Deck " + letter() + ": " + file.getFileName() + " was not found.");
+        if (file != juce::File())
+            status ("Deck " + letter() + ": " + file.getFileName() + " was not found.");
+        // No file in these settings (a snapshot of an empty deck): the deck is emptied.
+        if (s.containsKey (key ("file")) && player.getSource() != nullptr)
+        {
+            player.stop();
+            player.setSource (nullptr);
+            strip.setSource (nullptr);
+            updateFields();
+        }
     }
     repaint();
 }

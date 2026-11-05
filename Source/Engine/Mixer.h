@@ -17,6 +17,12 @@
 //   in the sum whatever plugins they hold.
 // * The Mixer is the plugins' host playhead: "playing" while any deck plays,
 //   with the time counted from the last Play all.
+// * Capture: the sum (after its slots) and one stem per deck (just before the
+//   sum, so after mute and solo) go to threaded WAV writers. Each stream skips
+//   its own latency at the start, so stems and sum line up sample for sample.
+//   When no deck plays any more, the capture runs on until the sum falls below
+//   -90 dBFS for 0.3 s (or a time limit): the tail. A capture can be listened
+//   to (the preview), mixed into the output after everything else.
 
 #pragma once
 
@@ -89,6 +95,18 @@ public:
     static float faderDbToPosition (float db) noexcept;
     static float faderGain (float position) noexcept;
 
+    // Capture (message thread). Stream 0 is the sum, 1..3 the stems of decks A..C;
+    // a null writer means that stream is not written.
+    static constexpr int numStreams = numDecks + 1;
+    enum class CaptureState { idle, recording, tail, finished };
+    using Writer = juce::AudioFormatWriter::ThreadedWriter;
+    void startCapture (const std::array<Writer*, numStreams>& writers, const std::array<int, numStreams>& skipSamples, double tailLimitSeconds);
+    void cutCapture() noexcept                            { captureCut.store (true); }      // ends it now, no tail
+    void stopCapture();                                   // detaches the writers; after this they may be deleted
+    CaptureState getCaptureState() const noexcept         { return captureState.load(); }
+    double getCapturedSeconds() const noexcept            { return (double) captureWritten.load() / outputRate.load(); }
+    juce::AudioTransportSource& getPreview() noexcept     { return preview; }
+
     // MIDI.
     CcTable& getCcTable() noexcept                        { return ccTable; }
     MidiEngine& getMidi() noexcept                        { return midi; }
@@ -113,7 +131,7 @@ public:
                                            float* const* outputs, int numOutputs, int numSamples,
                                            const juce::AudioIODeviceCallbackContext&) override;
     void audioDeviceAboutToStart (juce::AudioIODevice*) override;
-    void audioDeviceStopped() override {}
+    void audioDeviceStopped() override                    { preview.releaseResources(); }
 
     // juce::AudioPlayHead
     juce::Optional<PositionInfo> getPosition() const override;
@@ -146,6 +164,18 @@ private:
     CcTable ccTable;
     MidiEngine midi;
     static void applyRamp (Strip::Ramp&, float target, float rampMs, double rate, float* const* buf, int numSamples) noexcept;
+    void writeCapture (int stream, const float* const* channels, int numSamples) noexcept;
+    void captureTailCheck (bool anyPlaying, int numSamples) noexcept;
+
+    juce::SpinLock captureLock;
+    std::array<Writer*, numStreams> captureWriters {};
+    std::array<int, numStreams> captureSkip {};
+    std::atomic<CaptureState> captureState { CaptureState::idle };
+    std::atomic<bool> captureCut { false };
+    std::atomic<int64_t> captureWritten { 0 };
+    int64_t captureTail = 0, captureSilent = 0, captureTailLimit = 0;
+    juce::AudioTransportSource preview;
+    juce::AudioBuffer<float> previewBuffer { 2, 4096 };
     std::atomic<bool> headPlaying { false };
     std::atomic<juce::int64> headSamples { 0 };
     std::atomic<int> quality { (int) Quality::Max };

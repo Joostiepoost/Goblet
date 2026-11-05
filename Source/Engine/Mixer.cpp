@@ -125,6 +125,64 @@ juce::Optional<juce::AudioPlayHead::PositionInfo> Mixer::getPosition() const
     return info;
 }
 
+//==============================================================================
+void Mixer::startCapture (const std::array<Writer*, numStreams>& writers, const std::array<int, numStreams>& skips, double tailLimitSeconds)
+{
+    const juce::SpinLock::ScopedLockType sl (captureLock);
+    captureWriters = writers;
+    for (int i = 0; i < numStreams; ++i) captureSkip[(size_t) i] = juce::jmax (0, skips[(size_t) i]);
+    captureTailLimit = (int64_t) (juce::jmax (0.0, tailLimitSeconds) * outputRate.load());
+    captureTail = captureSilent = 0;
+    captureWritten.store (0);
+    captureCut.store (false);
+    captureState.store (CaptureState::recording);
+}
+
+void Mixer::stopCapture()
+{
+    const juce::SpinLock::ScopedLockType sl (captureLock);
+    captureWriters = {};
+    captureState.store (CaptureState::idle);
+}
+
+void Mixer::writeCapture (int stream, const float* const* ch, int n) noexcept
+{
+    auto* w = captureWriters[(size_t) stream];
+    if (w == nullptr) return;
+
+    int offset = 0;
+    auto& skip = captureSkip[(size_t) stream];
+    if (skip > 0)
+    {
+        offset = juce::jmin (skip, n);
+        skip -= offset;
+    }
+    if (offset < n)
+    {
+        const float* shifted[2] = { ch[0] + offset, ch[1] + offset };
+        w->write (shifted, n - offset);
+        if (stream == 0) captureWritten.fetch_add (n - offset);
+    }
+}
+
+void Mixer::captureTailCheck (bool anyDeckPlaying, int n) noexcept
+{
+    // The tail: from the last deck stopping until the sound has died away.
+    if (captureState.load() == CaptureState::recording && ! anyDeckPlaying)
+        captureState.store (CaptureState::tail);
+    else if (captureState.load() == CaptureState::tail && anyDeckPlaying)
+        captureState.store (CaptureState::recording);     // a deck started again: no tail yet
+
+    if (captureState.load() == CaptureState::tail)
+    {
+        const float peak = juce::jmax (sum.getMagnitude (0, 0, n), sum.getMagnitude (1, 0, n));
+        captureSilent = peak < 3.1623e-5f ? captureSilent + n : 0;     // -90 dBFS
+        captureTail += n;
+        if (captureSilent >= (int64_t) (0.3 * outputRate.load()) || captureTail >= captureTailLimit)
+            captureState.store (CaptureState::finished);
+    }
+}
+
 bool Mixer::anyPlaying() const noexcept
 {
     for (auto& d : decks)
@@ -164,6 +222,9 @@ void Mixer::prepare (double sampleRate, int maximumBlockSize)
 
     for (auto& c : chains)
         c->prepare (sampleRate, maximumBlockSize);
+
+    previewBuffer.setSize (2, juce::jmax (n, 4096));
+    preview.prepareToPlay (n, sampleRate);
 }
 
 void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noexcept
@@ -223,6 +284,14 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
             raise (s.peak[(size_t) ch], s.buffer.getMagnitude (ch, 0, numSamples));
     }
 
+    // Capture: the writers are only touched while their lock is held.
+    const auto cstate = captureState.load();
+    juce::SpinLock::ScopedTryLockType captureTry (captureLock);
+    const bool capturing = (cstate == CaptureState::recording || cstate == CaptureState::tail) && captureTry.isLocked();
+    if (capturing && captureCut.exchange (false))
+        captureState.store (CaptureState::finished);
+    const bool writing = capturing && captureState.load() != CaptureState::finished;
+
     // ...then aligned to the slowest deck, muted or soloed, and summed.
     const int aligned = getAlignedLatency();
 
@@ -235,23 +304,32 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
 
         const float target = (! s.mute.load() && (! anySolo || s.solo.load())) ? 1.0f : 0.0f;
 
-        if (juce::exactlyEqual (s.gain, target))
-        {
-            if (target > 0.0f)
-                for (int ch = 0; ch < 2; ++ch)
-                    juce::FloatVectorOperations::add (out[ch], buf[ch], numSamples);
-        }
-        else
+        // Mute and solo, ramped, applied to the deck's buffer (which is also its stem).
+        if (! juce::exactlyEqual (s.gain, target))
         {
             float g = s.gain;
             for (int k = 0; k < numSamples; ++k)
             {
                 g = target > g ? juce::jmin (target, g + gainStep) : juce::jmax (target, g - gainStep);
-                out[0][k] += g * buf[0][k];
-                out[1][k] += g * buf[1][k];
+                buf[0][k] *= g;
+                buf[1][k] *= g;
             }
             s.gain = g;
         }
+        else if (target <= 0.0f)
+        {
+            s.buffer.clear (0, numSamples);
+        }
+
+        if (writing)
+        {
+            const float* stem[2] = { buf[0], buf[1] };
+            writeCapture (1 + i, stem, numSamples);
+        }
+
+        if (s.gain > 0.0f || target > 0.0f)
+            for (int ch = 0; ch < 2; ++ch)
+                juce::FloatVectorOperations::add (out[ch], buf[ch], numSamples);
     }
 
     // The sum's plugins.
@@ -268,6 +346,13 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         if (m >= 1.0f) clipped.store (true);
     }
 
+    if (writing)
+    {
+        const float* sumCh[2] = { out[0], out[1] };
+        writeCapture (0, sumCh, numSamples);
+        captureTailCheck (playingNow, numSamples);
+    }
+
     if (numOutputs >= 2)
     {
         juce::FloatVectorOperations::copy (outputs[0], out[0], numSamples);
@@ -280,6 +365,15 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         juce::FloatVectorOperations::copy (outputs[0], out[0], numSamples);
         juce::FloatVectorOperations::add (outputs[0], out[1], numSamples);
         juce::FloatVectorOperations::multiply (outputs[0], 0.5f, numSamples);
+    }
+
+    // A capture being listened to plays on top (not captured, not metered).
+    if (preview.isPlaying() && numSamples <= previewBuffer.getNumSamples())
+    {
+        juce::AudioSourceChannelInfo info (&previewBuffer, 0, numSamples);
+        preview.getNextAudioBlock (info);
+        for (int c = 0; c < juce::jmin (2, numOutputs); ++c)
+            juce::FloatVectorOperations::add (outputs[c], previewBuffer.getReadPointer (c), numSamples);
     }
 }
 

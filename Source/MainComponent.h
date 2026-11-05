@@ -1,10 +1,11 @@
 // MainComponent.h — everything inside Goblet's main window.
 //
-// Step 4: three decks (source strip, fragment, loop, reverse, crossfade,
+// Step 5: three decks (source strip, fragment, loop, reverse, crossfade,
 // Play, Mute, Solo, trim, two slots before the fader), the mixer column
 // (faders, meters, two slots after each fader, the sum's two slots), the sum
-// meter and clip lamp, MIDI mappings, the quality presets and the audio
-// on/off switch. The captures panel is drawn as a placeholder where it will go.
+// meter and clip lamp, MIDI mappings, live capture (sum and stems, with a
+// snapshot of the session) and the captures panel, the quality presets and
+// the audio on/off switch.
 
 #pragma once
 
@@ -15,6 +16,8 @@
 #include "UI/PluginHost.h"
 #include "UI/MidiMappings.h"
 #include "UI/MidiPanel.h"
+#include "UI/CapturesPanel.h"
+#include "Engine/CaptureRecorder.h"
 
 class MainComponent : public juce::Component,
                       private juce::Timer,
@@ -38,6 +41,13 @@ private:
     void showAudioSettings();
     void loadSettings();
     void saveSettings();
+    // The session: the same keys go to the settings (kept between launches) and to a take's snapshot.
+    void writeSession (juce::PropertySet&);
+    void readSession (const juce::PropertySet&, bool replacePlugins);
+    void toggleRecord();
+    void captureFinished (const juce::File&);
+    void restoreSnapshot (const juce::File&);
+    juce::File capturesFolder() const;
     void setStatus (const juce::String&);
     void showMidiWindow();
     void applyMidiInputs();
@@ -59,13 +69,15 @@ private:
     goblet::MixerPanel mixerPanel { mixer, pluginHost };
     goblet::SumMeter sumMeter { mixer };
 
-    juce::TextButton playAllButton, stopAllButton, audioButton { "Audio..." }, audioOnButton { "Audio on" }, pluginsButton { "Plugins..." }, midiButton { "MIDI..." };
+    goblet::CaptureRecorder recorder { mixer };
+    std::unique_ptr<goblet::CapturesPanel> capturesPanel;
+
+    juce::TextButton playAllButton, stopAllButton, recordButton, audioButton { "Audio..." }, audioOnButton { "Audio on" }, pluginsButton { "Plugins..." }, midiButton { "MIDI..." };
     juce::ComboBox qualityBox;
     juce::Label qualityCaption { {}, "Quality" }, cpuLabel, statusLabel;
     juce::TooltipWindow tooltips { this, 600 };
 
     // Where the parts of later steps will go.
-    juce::Rectangle<int> capturesArea;
 
     bool restoring = false;
     bool audioEnabled = true;

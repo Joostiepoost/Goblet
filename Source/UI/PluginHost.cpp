@@ -285,10 +285,8 @@ void PluginHost::removePlugin (int chain, int slot)
 }
 
 //==============================================================================
-void PluginHost::save()
+void PluginHost::writeTo (juce::PropertySet& s) const
 {
-    if (pendingLoads > 0) return;    // restoring: the settings still hold the full set
-
     juce::XmlElement xml ("PLUGINS");
     for (int c = 0; c < Mixer::numChains; ++c)
         if (mixer.chain (c).numPlugins() > 0)
@@ -297,14 +295,40 @@ void PluginHost::save()
             e->setAttribute ("id", c);
             xml.addChildElement (e.release());
         }
+    s.setValue ("plugins", &xml);
+}
 
-    properties.getUserSettings()->setValue ("plugins", &xml);
+void PluginHost::save()
+{
+    if (pendingLoads > 0) return;    // restoring: the settings still hold the full set
+    writeTo (*properties.getUserSettings());
     properties.saveIfNeeded();
+}
+
+void PluginHost::removeAll()
+{
+    for (int c = 0; c < Mixer::numChains; ++c)
+        for (int k = 0; k < slotsPerChain; ++k)
+            if (mixer.chain (c).get (k) != nullptr)
+            {
+                closeEditor (c, k);
+                auto old = mixer.chain (c).remove (k);
+                mixer.chain (c).setBypass (k, false);
+                old = nullptr;
+            }
+    changed();
 }
 
 void PluginHost::restore()
 {
-    auto xml = properties.getUserSettings()->getXmlValue ("plugins");
+    restoreFrom (*properties.getUserSettings(), false);
+}
+
+void PluginHost::restoreFrom (const juce::PropertySet& s, bool removeCurrentFirst)
+{
+    if (removeCurrentFirst) removeAll();
+
+    auto xml = s.getXmlValue ("plugins");
     if (xml == nullptr) return;
 
     for (auto* ce : xml->getChildWithTagNameIterator ("CHAIN"))

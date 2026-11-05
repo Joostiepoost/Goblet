@@ -60,7 +60,8 @@ target_sources(Goblet PRIVATE
     Source/UI/Meters.cpp
     Source/UI/PluginHost.cpp
     Source/UI/MidiMappings.cpp
-    Source/UI/MidiPanel.cpp)
+    Source/UI/MidiPanel.cpp
+    Source/UI/CapturesPanel.cpp)
 
 target_compile_definitions(Goblet PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Goblet,JUCE_PRODUCT_NAME>"
