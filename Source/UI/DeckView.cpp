@@ -21,8 +21,8 @@ static juce::String playText (bool playing)
     return playing ? juce::String::fromUTF8 ("\xe2\x96\xa0 Stop") : juce::String::fromUTF8 ("\xe2\x96\xb6 Play");
 }
 
-DeckView::DeckView (int deckIndex, DeckPlayer& p, juce::AudioFormatManager& f)
-    : index (deckIndex), player (p), formats (f)
+DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f)
+    : index (deckIndex), mixer (m), player (m.deck (deckIndex)), formats (f)
 {
     addAndMakeVisible (strip);
     strip.onFragmentChanged = [this] (int64_t in, int64_t out) { setFragment (in, out); };
@@ -44,12 +44,23 @@ DeckView::DeckView (int deckIndex, DeckPlayer& p, juce::AudioFormatManager& f)
     reverseButton.setTooltip ("Play the fragment backwards (switching while playing crossfades)");
     reverseButton.onClick = [this] { player.setReverse (reverseButton.getToggleState()); changed(); };
 
-    for (auto* b : { &openButton, &playButton, &loopButton, &reverseButton })
+    muteButton.setClickingTogglesState (true);
+    muteButton.setTooltip ("Mute deck " + letter() + " (Shift-" + juce::String (index + 1) + "). The deck keeps playing, silently, and its meter keeps moving.");
+    muteButton.onClick = [this] { mixer.setMute (index, muteButton.getToggleState()); changed(); };
+
+    soloButton.setClickingTogglesState (true);
+    soloButton.setTooltip ("Solo deck " + letter() + " (Option-" + juce::String (index + 1) + "): only soloed decks are heard. Mute wins over solo.");
+    soloButton.onClick = [this] { mixer.setSolo (index, soloButton.getToggleState()); changed(); };
+
+    for (auto* b : { &openButton, &playButton, &muteButton, &soloButton, &loopButton, &reverseButton })
     {
         b->setWantsKeyboardFocus (false);
         b->setColour (juce::TextButton::buttonOnColourId, toggleOn);
         addAndMakeVisible (b);
     }
+    muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc0632b));
+    soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd4a72c));
+    soloButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
 
     for (auto* l : { &inField, &outField, &fadeField })
     {
@@ -154,8 +165,22 @@ void DeckView::togglePlay()
 {
     if (player.getSource() == nullptr) { status ("Deck " + letter() + " has no file yet."); return; }
     if (player.isPlaying()) player.stop();
-    else                    player.play();
+    else
+    {
+        if (onPlayRequested) onPlayRequested();
+        player.play();
+    }
     refresh();
+}
+
+void DeckView::toggleMute()
+{
+    muteButton.setToggleState (! muteButton.getToggleState(), juce::sendNotification);
+}
+
+void DeckView::toggleSolo()
+{
+    soloButton.setToggleState (! soloButton.getToggleState(), juce::sendNotification);
 }
 
 void DeckView::setFragment (int64_t in, int64_t out)
@@ -201,6 +226,14 @@ void DeckView::refresh()
         playButton.setButtonText (playText (playing));
         playButton.setToggleState (playing, juce::dontSendNotification);
     }
+
+    // Silenced by mute or by another deck's solo: the deck's name dims.
+    const bool audible = mixer.isAudible (index);
+    if (audible != shownAudible)
+    {
+        shownAudible = audible;
+        repaint();
+    }
 }
 
 //==============================================================================
@@ -212,6 +245,8 @@ void DeckView::writeState (juce::PropertySet& s) const
     s.setValue (key ("out"), juce::String (player.getOutPoint()));
     s.setValue (key ("loop"), player.isLooping());
     s.setValue (key ("reverse"), player.isReversed());
+    s.setValue (key ("mute"), mixer.isMuted (index));
+    s.setValue (key ("solo"), mixer.isSoloed (index));
     s.setValue (key ("fadeMs"), player.getCrossfadeMs());
     s.setValue (key ("fadeShape"), (int) player.getCrossfadeShape());
     s.setValue (key ("fadeTension"), player.getCrossfadeTension());
@@ -223,6 +258,10 @@ void DeckView::readState (const juce::PropertySet& s)
     player.setLoop (loopButton.getToggleState());
     reverseButton.setToggleState (s.getBoolValue (key ("reverse"), false), juce::dontSendNotification);
     player.setReverse (reverseButton.getToggleState());
+    muteButton.setToggleState (s.getBoolValue (key ("mute"), false), juce::dontSendNotification);
+    mixer.setMute (index, muteButton.getToggleState());
+    soloButton.setToggleState (s.getBoolValue (key ("solo"), false), juce::dontSendNotification);
+    mixer.setSolo (index, soloButton.getToggleState());
 
     fadeField.setText (juce::String (s.getDoubleValue (key ("fadeMs"), 10.0), 1), juce::dontSendNotification);
     fadeShapeBox.setSelectedId (juce::jlimit (0, numCrossfadeShapes - 1, s.getIntValue (key ("fadeShape"), 0)) + 1, juce::dontSendNotification);
@@ -260,7 +299,7 @@ void DeckView::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, dragHover ? 2.0f : 1.0f);
 
     auto header = getLocalBounds().reduced (14, 10).removeFromTop (26);
-    g.setColour (juce::Colours::white);
+    g.setColour (juce::Colours::white.withAlpha (shownAudible ? 1.0f : 0.35f));
     g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
     g.drawText (letter(), header.removeFromLeft (24), juce::Justification::centredLeft);
 
@@ -271,7 +310,7 @@ void DeckView::paint (juce::Graphics& g)
         info = s->name + juce::String::fromUTF8 ("  \xc2\xb7  ") + juce::String (s->sampleRate / 1000.0, 1) + " kHz"
              + juce::String::fromUTF8 ("  \xc2\xb7  ") + (s->fileChannels == 1 ? "mono" : s->fileChannels == 2 ? "stereo" : juce::String (s->fileChannels) + " ch (1-2 used)")
              + juce::String::fromUTF8 ("  \xc2\xb7  ") + formatTime (s->seconds());
-    g.drawText (info, header.withTrimmedRight (330), juce::Justification::centredLeft, true);
+    g.drawText (info, header.withTrimmedRight (400), juce::Justification::centredLeft, true);
 }
 
 void DeckView::resized()
@@ -282,7 +321,11 @@ void DeckView::resized()
     reverseButton.setBounds (header.removeFromRight (56));
     header.removeFromRight (6);
     loopButton.setBounds (header.removeFromRight (60));
-    header.removeFromRight (6);
+    header.removeFromRight (12);
+    soloButton.setBounds (header.removeFromRight (30));
+    header.removeFromRight (4);
+    muteButton.setBounds (header.removeFromRight (30));
+    header.removeFromRight (12);
     playButton.setBounds (header.removeFromRight (84));
     header.removeFromRight (12);
     openButton.setBounds (header.removeFromRight (84));

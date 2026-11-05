@@ -107,8 +107,14 @@ void SourceStrip::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (12.0f));
     g.setColour (juce::Colours::white);
     const double sr = source->sampleRate;
-    g.drawText ("in " + formatTime ((double) inPoint / sr), juce::Rectangle<float> (xIn + 4.0f, (float) w.getY(), 120.0f, 14.0f), juce::Justification::left);
-    g.drawText ("out " + formatTime ((double) outPoint / sr), juce::Rectangle<float> (xOut - 124.0f, (float) w.getY(), 120.0f, 14.0f), juce::Justification::right);
+    // A short fragment: the labels go outside the flags so they don't overlap.
+    const bool narrow = xOut - xIn < 220.0f;
+    g.drawText ("in " + formatTime ((double) inPoint / sr),
+                narrow ? juce::Rectangle<float> (xIn - 124.0f, (float) w.getY(), 120.0f, 14.0f) : juce::Rectangle<float> (xIn + 4.0f, (float) w.getY(), 120.0f, 14.0f),
+                narrow ? juce::Justification::right : juce::Justification::left);
+    g.drawText ("out " + formatTime ((double) outPoint / sr),
+                narrow ? juce::Rectangle<float> (xOut + 4.0f, (float) w.getY(), 120.0f, 14.0f) : juce::Rectangle<float> (xOut - 124.0f, (float) w.getY(), 120.0f, 14.0f),
+                narrow ? juce::Justification::left : juce::Justification::right);
 
     // Source playhead
     if (playPos >= 0.0)

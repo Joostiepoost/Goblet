@@ -1,16 +1,16 @@
 // DeckView.h — one deck on screen: header, source strip, fragment fields.
 //
-//   A  file name · rate · length           [Open...] [Play] [Loop] [Rev]
+//   A  file name · rate · length   [Open...] [Play] [M] [S] [Loop] [Rev]
 //   [ waveform with in and out flags, playhead                          ]
 //   In [..]  Out [..]  Crossfade [..] ms  [shape]  Tension [----]
 //
-// It talks to its DeckPlayer directly; MainComponent only saves and restores
-// its state and forwards keyboard shortcuts.
+// It talks to its DeckPlayer and to the Mixer (mute, solo) directly;
+// MainComponent only saves and restores its state and forwards shortcuts.
 
 #pragma once
 
 #include <JuceHeader.h>
-#include "../Engine/DeckPlayer.h"
+#include "../Engine/Mixer.h"
 #include "SourceStrip.h"
 
 namespace goblet
@@ -20,11 +20,13 @@ class DeckView : public juce::Component,
                  public juce::FileDragAndDropTarget
 {
 public:
-    DeckView (int index, DeckPlayer& player, juce::AudioFormatManager& formats);
+    DeckView (int index, Mixer& mixer, juce::AudioFormatManager& formats);
 
     void loadFile (const juce::File& file);
     void openFileDialog();
     void togglePlay();
+    void toggleMute();
+    void toggleSolo();
 
     // Settings, under keys "deckA.file", "deckA.in", ... (A, B or C).
     void writeState (juce::PropertySet&) const;
@@ -33,6 +35,7 @@ public:
     void refresh();            // called by MainComponent's timer: playhead and Play button
 
     std::function<void()> onChanged;                       // something worth saving changed
+    std::function<void()> onPlayRequested;                 // before a Play: turns audio on if it was off
     std::function<void (const juce::String&)> onStatus;    // a line for the status bar
 
     juce::String letter() const          { return juce::String::charToString ((juce::juce_wchar) ('A' + index)); }
@@ -54,11 +57,12 @@ private:
     juce::String key (const char* name) const   { return "deck" + letter() + "." + name; }
 
     const int index;
+    Mixer& mixer;
     DeckPlayer& player;
     juce::AudioFormatManager& formats;
 
     SourceStrip strip;
-    juce::TextButton openButton { "Open..." }, playButton, loopButton { "Loop" }, reverseButton { "Rev" };
+    juce::TextButton openButton { "Open..." }, playButton, muteButton { "M" }, soloButton { "S" }, loopButton { "Loop" }, reverseButton { "Rev" };
     juce::Label inCaption { {}, "In" }, inField, outCaption { {}, "Out" }, outField;
     juce::Label fadeCaption { {}, "Crossfade (ms)" }, fadeField;
     juce::ComboBox fadeShapeBox;
@@ -67,7 +71,7 @@ private:
 
     std::unique_ptr<juce::FileChooser> chooser;
     bool dragHover = false;
-    bool shownPlaying = false;
+    bool shownPlaying = false, shownAudible = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeckView)
 };

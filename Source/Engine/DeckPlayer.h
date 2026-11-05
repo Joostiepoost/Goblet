@@ -61,6 +61,7 @@ public:
     CrossfadeShape getCrossfadeShape() const noexcept            { return (CrossfadeShape) fadeShape.load(); }
     double getCrossfadeTension() const noexcept                  { return fadeTension.load(); }
 
+    void audioStopped();    // the device was closed: the deck shows as stopped
     void play();     // from the start of the fragment
     void stop();     // fade out, then back to the start
 

@@ -10,6 +10,7 @@
 //    relative to the steepest step of the sine itself (1.00 = no click).
 // 4. Start, stop and play-once: the same measure for the declick ramps.
 // 5. Play all: two decks started together stay sample-aligned.
+//    Mute and solo: who is heard, and the 5 ms ramps don't click.
 // 6. CPU: time to produce 1 s of stereo output per deck, per preset, at the
 //    rate ratios that occur in practice.
 
@@ -266,6 +267,59 @@ int main (int argc, char* argv[])
         for (size_t i = 0; i < l.size(); ++i) err = std::max (err, (double) std::abs (l[i] - 2.0f * y[i]));
         line ("Two decks with the same 44.1 kHz file on a 48 kHz device, started with Play all: largest difference from twice one deck "
               + juce::String (err, 9) + (err < 1.0e-6 ? " (sample-aligned)." : " (NOT aligned)."));
+        line ("");
+    }
+
+    //== 5b. Mute and solo ======================================================
+    {
+        line ("## Mute and solo");
+        line ("");
+        const double rate = 48000.0;
+        auto src = sineFile (rate, 1.0, 1000.0, 0.25, 0.5 * pi);
+        auto runMixer = [&] (Mixer& m, double seconds, std::function<void (double)> atBlock)
+        {
+            std::vector<float> l ((size_t) (seconds * rate), 0.0f), r (l.size(), 0.0f);
+            for (size_t pos = 0; pos < l.size(); pos += 64)
+            {
+                if (atBlock) atBlock ((double) pos / rate);
+                float* outs[2] = { l.data() + pos, r.data() + pos };
+                m.process (outs, 2, (int) std::min ((size_t) 64, l.size() - pos));
+            }
+            return l;
+        };
+        auto rms = [] (const std::vector<float>& y, double rate, double from, double to)
+        {
+            double acc = 0.0; int n = 0;
+            for (size_t i = (size_t) (from * rate); i < (size_t) (to * rate) && i < y.size(); ++i) { acc += (double) y[i] * y[i]; ++n; }
+            return n > 0 ? std::sqrt (acc / n) : 0.0;
+        };
+
+        // A and B play the same sine; mute B at 0.2 s, solo A at 0.4 s, mute A at 0.6 s, clear all at 0.8 s.
+        Mixer m;
+        m.deck (0).setSource (src);
+        m.deck (1).setSource (src);
+        m.prepare (rate, 64);
+        m.playAll();
+        auto y = runMixer (m, 1.0, [&] (double t)
+        {
+            m.setMute (1, t >= 0.2 && t < 0.8);
+            m.setSolo (0, t >= 0.4 && t < 0.8);
+            m.setMute (0, t >= 0.6 && t < 0.8);
+        });
+        const double one = 0.25 / std::sqrt (2.0);
+        const double step = maxStep (y, (size_t) (0.01 * rate)) / (2.0 * std::sin (pi * 1000.0 / rate) * 0.5);
+        line ("Decks A and B play the same 1 kHz sine (level of one deck: " + juce::String (one, 3) + " RMS). Level heard in each phase:");
+        line ("");
+        line ("| Phase | Expected | Measured RMS |");
+        line ("| --- | --- | --- |");
+        line ("| A and B | two decks | " + juce::String (rms (y, rate, 0.05, 0.19), 3) + " |");
+        line ("| B muted | one deck | " + juce::String (rms (y, rate, 0.25, 0.39), 3) + " |");
+        line ("| B muted, A soloed | one deck | " + juce::String (rms (y, rate, 0.45, 0.59), 3) + " |");
+        line ("| A soloed and muted, B muted | silence | " + juce::String (rms (y, rate, 0.65, 0.79), 6) + " |");
+        line ("| all cleared | two decks | " + juce::String (rms (y, rate, 0.85, 0.99), 3) + " |");
+        line ("");
+        line ("Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: "
+              + juce::String (step, 2) + (step <= 1.05 ? " (no clicks)." : " (CLICK)."));
         line ("");
     }
 

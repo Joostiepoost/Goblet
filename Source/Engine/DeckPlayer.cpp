@@ -130,6 +130,17 @@ void DeckPlayer::prepare (double sampleRate, int)
     fade.remaining = 0;
     state = State::stopped;
     q = 0.0;
+    // Commands sent while the device was closed (audio off) are dropped.
+    lastPlay = playCounter.load();
+    lastStop = stopCounter.load();
+    uiPlaying.store (false);
+    uiSourcePos.store (-1.0);
+}
+
+void DeckPlayer::audioStopped()
+{
+    uiPlaying.store (false);
+    uiSourcePos.store (-1.0);
 }
 
 void DeckPlayer::startNow() noexcept

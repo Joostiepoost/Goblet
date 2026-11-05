@@ -36,8 +36,8 @@ Other options:
 
 | Step | Content | State |
 | --- | --- | --- |
-| 1 | One deck: source strip, fragment, loop, reverse, crossfade, quality presets, transport; measurements | testing |
-| 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo | |
+| 1 | One deck: source strip, fragment, loop, reverse, crossfade, quality presets, transport; measurements | done |
+| 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | testing |
 | 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | |
 | 4 | Faders and MIDI: dB law, mapping window, smoothing, pickup, reversed ranges, 14-bit switch | |
 | 5 | Live capture: sum and stems, tail, captures panel, snapshots | |
@@ -45,11 +45,27 @@ Other options:
 
 The full design is in the Goblet project proposal.
 
+## Using step 2: three decks, meters, mute and solo, audio on/off
+
+- **Decks B and C** work exactly like deck A (see step 1 below). Keys: **1**, **2**, **3** play or stop a deck.
+- **Play all** (or **Space**) starts every deck that has a file in the same sample.
+- **M** mutes a deck (**Shift-1/2/3**), **S** solos it (**Option-1/2/3**). With any deck soloed, only soloed decks are heard; mute wins over solo. Both ramp over 5 ms, so they never click. A deck silenced by mute or by another deck's solo shows its letter dimmed.
+- **Mixer column**: a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in. The faders (step 4) and plugin slots (step 3) have dashed placeholders.
+- **Sum meter** (top right): what you hear. The red lamp lights when the sum reaches 0 dBFS and stays lit until you click it.
+- **Audio on / Audio off** (**Shift-Cmd-A**): off closes the audio device, so Goblet uses no CPU while it sits in the background. The files and settings stay loaded. Play, Play all or Space turn audio back on.
+
+**Worth testing**:
+- Load the same file in two decks with the same fragment and press Play all: they should sound as one, louder (in phase), not as a flanged double.
+- Three decks with fragments of different lengths, looping: they drift against each other, without clicks.
+- Mute and solo while playing, quickly and repeatedly: no clicks.
+- Audio off, then check Activity Monitor: Goblet should be near 0% CPU. Then Space: audio comes back and the decks start.
+- Push the sum over 0 dBFS (three loud files): the lamp lights; click it to reset.
+
 ## Using step 1
 
-The window already has its final layout: deck A at the top left, and dashed placeholders where decks B and C, the mixer and the captures will go.
+The window already has its final layout: the decks on the left, the mixer on the right, and a dashed placeholder where the captures will go.
 
-- **Load a file** into deck A: *Open...*, or drop a WAV or AIFF file on the deck.
+- **Load a file** into a deck: *Open...*, or drop a WAV or AIFF file on the deck.
 - **The source strip** shows the whole file. Drag the in or out flag to move it, or drag anywhere else to mark a new fragment. The dashed line is where the deck is reading.
 - **In / Out**: double-click to type (`1:23.456`, `83.456` or `83`).
 - **Play** (or key **1**) starts the deck at the beginning of its fragment; **Stop** fades it out over 3 ms and returns it to the start. A 3 ms fade-in at the start means a fragment that begins mid-waveform doesn't click.
@@ -77,7 +93,7 @@ Everything is remembered between sessions: the file, fragment, loop, reverse, cr
 2. The playhead stays inside the fragment, with reverse switched while playing.
 3. Loop seam and reverse switch: no clicks with a crossfade.
 4. Start, stop and play once: no clicks from the 3 ms ramps.
-5. Play all: decks started together stay sample-aligned.
+5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps.
 6. CPU per deck, per preset, at the rate ratios that occur in practice.
 
 Please commit `report.md` with GitHub Desktop so I can read your M4's CPU table. `report-cloud-test-machine.md` holds the same report from the slower machine the code was written on: there all checks pass, and the costliest realistic case (a 96 kHz file on a 44.1 kHz device at Render) takes about 35% of one core per deck. The M4 should need roughly two thirds of that. In the reverse-switch column, equal power and Bezier show 1.32 and 1.28 rather than 1.00: that is the expected level bump of those shapes on correlated material during the crossfade, not a click.

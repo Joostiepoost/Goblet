@@ -1,6 +1,6 @@
 # Goblet deck player: measurements (step 1)
 
-Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 11:29:35am.
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, Linux. Date: 5 Nov 2026 12:05:58pm.
 
 ## Passthrough at equal rates
 
@@ -37,14 +37,28 @@ The same sine, fragment starting at a peak of the waveform. Step relative to the
 
 Two decks with the same 44.1 kHz file on a 48 kHz device, started with Play all: largest difference from twice one deck 0.000000000 (sample-aligned).
 
+## Mute and solo
+
+Decks A and B play the same 1 kHz sine (level of one deck: 0.177 RMS). Level heard in each phase:
+
+| Phase | Expected | Measured RMS |
+| --- | --- | --- |
+| A and B | two decks | 0.354 |
+| B muted | one deck | 0.177 |
+| B muted, A soloed | one deck | 0.177 |
+| A soloed and muted, B muted | silence | 0.000000 |
+| all cleared | two decks | 0.354 |
+
+Largest sample-to-sample step over the whole run, relative to the steepest step of the two-deck sine: 1.00 (no clicks).
+
 ## CPU
 
 Time for one deck to produce 1 s of stereo output, as a share of one core of this machine (white noise, looped). Three decks cost about three times as much; all three run on the same audio thread.
 
 | Preset | 48.0 on 48.0 kHz (×1.000) | 44.1 on 48.0 kHz (×0.919) | 48.0 on 44.1 kHz (×1.088) | 44.1 on 96.0 kHz (×0.459) | 48.0 on 96.0 kHz (×0.500) | 96.0 on 48.0 kHz (×2.000) | 96.0 on 44.1 kHz (×2.177) | 192.0 on 48.0 kHz (×4.000) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| High | 0.0% | 1.4% | 4.1% | 2.8% | 2.7% | 8.3% | 8.2% | 18.2% |
-| Very high | 0.1% | 3.1% | 8.2% | 5.5% | 5.0% | 15.8% | 15.9% | 31.1% |
-| Max | 0.0% | 3.5% | 11.1% | 7.1% | 6.8% | 21.7% | 23.5% | 45.2% |
-| Render | 0.0% | 5.1% | 16.1% | 11.2% | 11.5% | 36.6% | 34.6% | 67.7% |
+| High | 0.0% | 1.4% | 4.1% | 2.7% | 2.6% | 8.0% | 8.0% | 16.4% |
+| Very high | 0.0% | 2.5% | 9.5% | 8.2% | 6.4% | 16.8% | 16.4% | 33.5% |
+| Max | 0.0% | 4.0% | 11.4% | 8.0% | 8.0% | 21.3% | 21.3% | 43.3% |
+| Render | 0.0% | 7.5% | 16.3% | 11.0% | 9.7% | 31.9% | 32.1% | 64.0% |
 

@@ -54,7 +54,8 @@ target_sources(Goblet PRIVATE
     Source/MainComponent.cpp
     ${GOBLET_ENGINE_SOURCES}
     Source/UI/SourceStrip.cpp
-    Source/UI/DeckView.cpp)
+    Source/UI/DeckView.cpp
+    Source/UI/Meters.cpp)
 
 target_compile_definitions(Goblet PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Goblet,JUCE_PRODUCT_NAME>"

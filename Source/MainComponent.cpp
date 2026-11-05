@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 1: one deck, transport, quality presets.
+// MainComponent.cpp — step 2: three decks, mixer meters, audio on/off.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -21,12 +21,18 @@ MainComponent::MainComponent()
     // Toolbar
     playAllButton.setButtonText (juce::String::fromUTF8 ("\xe2\x96\xb6 Play all"));
     playAllButton.setTooltip ("Start every deck that has a file, together, from the start of its fragment (Space)");
-    playAllButton.onClick = [this] { mixer.playAll(); };
+    playAllButton.onClick = [this] { if (! audioEnabled) setAudioEnabled (true); mixer.playAll(); };
     stopAllButton.setButtonText (juce::String::fromUTF8 ("\xe2\x96\xa0"));
     stopAllButton.setTooltip ("Stop every deck (Space while playing)");
     stopAllButton.onClick = [this] { mixer.stopAll(); };
     audioButton.setTooltip ("Audio device, sample rate and buffer size");
     audioButton.onClick = [this] { showAudioSettings(); };
+    audioOnButton.setClickingTogglesState (true);
+    audioOnButton.setToggleState (true, juce::dontSendNotification);
+    audioOnButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2f6fb8));
+    audioOnButton.setTooltip ("Audio processing on/off (Shift-Cmd-A). Off closes the audio device, so Goblet uses no CPU while it waits "
+                              "in the background; the files stay loaded. Play turns it back on.");
+    audioOnButton.onClick = [this] { setAudioEnabled (audioOnButton.getToggleState()); };
 
     for (int q = 0; q < numQualities; ++q)
         qualityBox.addItem (juce::String (kernelSpec ((Quality) q).name) + "  (" + juce::String (kernelSpec ((Quality) q).taps) + ")", q + 1);
@@ -38,7 +44,7 @@ MainComponent::MainComponent()
         if (! restoring) saveSettings();
     };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &qualityBox })
+    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &qualityBox })
     {
         c->setWantsKeyboardFocus (false);
         addAndMakeVisible (c);
@@ -55,11 +61,15 @@ MainComponent::MainComponent()
     statusLabel.setFont (juce::FontOptions (12.5f));
     addAndMakeVisible (statusLabel);
 
+    addAndMakeVisible (sumMeter);
+    addAndMakeVisible (mixerPanel);
+
     // Decks
-    for (int i = 0; i < activeDecks; ++i)
+    for (int i = 0; i < Mixer::numDecks; ++i)
     {
-        auto d = std::make_unique<DeckView> (i, mixer.deck (i), formats);
+        auto d = std::make_unique<DeckView> (i, mixer, formats);
         d->onChanged = [this] { if (! restoring) saveSettings(); };
+        d->onPlayRequested = [this] { if (! audioEnabled) setAudioEnabled (true); };
         d->onStatus = [this] (const juce::String& s) { setStatus (s); };
         addAndMakeVisible (*d);
         decks.push_back (std::move (d));
@@ -90,8 +100,32 @@ MainComponent::~MainComponent()
 //==============================================================================
 void MainComponent::togglePlayAll()
 {
+    if (! audioEnabled) { setAudioEnabled (true); mixer.playAll(); return; }
     if (mixer.anyPlaying()) mixer.stopAll();
     else                    mixer.playAll();
+}
+
+void MainComponent::setAudioEnabled (bool shouldBeOn)
+{
+    if (shouldBeOn == audioEnabled) return;
+    audioEnabled = shouldBeOn;
+
+    if (! shouldBeOn)
+    {
+        deviceManager.closeAudioDevice();
+        for (int i = 0; i < Mixer::numDecks; ++i)
+            mixer.deck (i).audioStopped();
+        cpuLabel.setText ("Audio off", juce::dontSendNotification);
+        setStatus ("Audio off: no audio processing, no CPU. The files stay loaded; Play or Shift-Cmd-A turns it back on.");
+    }
+    else
+    {
+        deviceManager.restartLastAudioDevice();
+        setStatus ("Audio on.");
+    }
+
+    audioOnButton.setToggleState (audioEnabled, juce::dontSendNotification);
+    audioOnButton.setButtonText (audioEnabled ? "Audio on" : "Audio off");
 }
 
 bool MainComponent::keyPressed (const juce::KeyPress& key)
@@ -102,12 +136,22 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    const auto c = key.getTextCharacter();
-    if (c >= '1' && c <= '3' && ! key.getModifiers().isAnyModifierKeyDown())
+    const auto mods = key.getModifiers();
+
+    if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
     {
-        const int i = (int) (c - '1');
-        if (i < (int) decks.size()) decks[(size_t) i]->togglePlay();
-        else setStatus ("Deck " + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + " arrives in step 2.");
+        setAudioEnabled (! audioEnabled);
+        return true;
+    }
+
+    // 1-3: play/stop a deck; Shift: mute; Option: solo.
+    const int code = key.getKeyCode();
+    if (code >= '1' && code <= '3' && ! mods.isCommandDown() && ! mods.isCtrlDown())
+    {
+        auto& d = *decks[(size_t) (code - '1')];
+        if (mods.isShiftDown())     d.toggleMute();
+        else if (mods.isAltDown())  d.toggleSolo();
+        else                        d.togglePlay();
         return true;
     }
 
@@ -131,6 +175,8 @@ void MainComponent::showAudioSettings()
 
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
 {
+    if (! audioEnabled) return;    // closing the device is not a new device choice
+
     if (auto xml = deviceManager.createStateXml())
     {
         properties.getUserSettings()->setValue ("audioState", xml.get());
@@ -171,14 +217,16 @@ void MainComponent::timerCallback()
 {
     for (auto& d : decks)
         d->refresh();
+    mixerPanel.refresh();
+    sumMeter.refresh();
 
     // CPU twice a second.
     static int tick = 0;
-    if (++tick % 15 == 0)
+    if (++tick % 15 == 0 && audioEnabled)
         cpuLabel.setText ("CPU " + juce::String (deviceManager.getCpuUsage() * 100.0, 1) + "%", juce::dontSendNotification);
 
     // After a message has been shown for 6 s, the status line goes back to what the engine does.
-    if (++statusAge > 180 && tick % 15 == 0)
+    if (++statusAge > 180 && tick % 15 == 0 && audioEnabled)
     {
         const double deviceRate = mixer.getOutputRate();
         juce::String s;
@@ -229,9 +277,6 @@ void MainComponent::paint (juce::Graphics& g)
         g.drawText (note, t.removeFromTop (18), juce::Justification::topLeft);
     };
 
-    for (int i = activeDecks; i < Mixer::numDecks; ++i)
-        placeholder (placeholderDecks[i], juce::String::charToString ((juce::juce_wchar) ('A' + i)), "Deck " + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + ": step 2");
-    placeholder (mixerArea, "Mixer", "Faders, meters and plugin slots: steps 2-4");
     placeholder (capturesArea, "Captures", "Live capture of the sum and stems: step 5");
 }
 
@@ -249,23 +294,25 @@ void MainComponent::resized()
     qualityBox.setBounds (bar.removeFromLeft (150));
     bar.removeFromLeft (12);
     audioButton.setBounds (bar.removeFromLeft (80));
-    cpuLabel.setBounds (bar.removeFromRight (110));
+    bar.removeFromLeft (6);
+    audioOnButton.setBounds (bar.removeFromLeft (84));
+    cpuLabel.setBounds (bar.removeFromRight (100));
+    bar.removeFromRight (16);
+    sumMeter.setBounds (bar.removeFromRight (200));
 
     statusLabel.setBounds (r.removeFromBottom (26).reduced (12, 2));
 
     r.reduce (12, 10);
     capturesArea = r.removeFromBottom (130);
     r.removeFromBottom (12);
-    mixerArea = r.removeFromRight (280);
+    mixerPanel.setBounds (r.removeFromRight (280));
     r.removeFromRight (12);
 
     const int gap = 12;
     const int h = (r.getHeight() - 2 * gap) / Mixer::numDecks;
     for (int i = 0; i < Mixer::numDecks; ++i)
     {
-        placeholderDecks[i] = r.removeFromTop (h);
+        decks[(size_t) i]->setBounds (r.removeFromTop (h));
         r.removeFromTop (gap);
-        if (i < (int) decks.size())
-            decks[(size_t) i]->setBounds (placeholderDecks[i]);
     }
 }
