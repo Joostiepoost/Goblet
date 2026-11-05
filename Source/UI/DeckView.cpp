@@ -8,6 +8,37 @@ namespace goblet
 
 static const juce::Colour toggleOn (0xff2f6fb8);
 
+// The trim knob: an arc from the centre (0 dB) to the value, filling its bounds.
+struct DeckView::TrimKnobLook : juce::LookAndFeel_V4
+{
+    void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
+                           float startAngle, float endAngle, juce::Slider& s) override
+    {
+        auto b = juce::Rectangle<int> (x, y, w, h).toFloat().reduced (2.0f);
+        const float radius = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f - 1.5f;
+        const auto c = b.getCentre();
+        const float mid = 0.5f * (startAngle + endAngle);
+        const float angle = startAngle + pos * (endAngle - startAngle);
+
+        juce::Path track;
+        track.addCentredArc (c.x, c.y, radius, radius, 0.0f, startAngle, endAngle, true);
+        g.setColour (s.findColour (juce::Slider::rotarySliderOutlineColourId));
+        g.strokePath (track, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        if (std::abs (angle - mid) > 0.01f)
+        {
+            juce::Path value;
+            value.addCentredArc (c.x, c.y, radius, radius, 0.0f, juce::jmin (mid, angle), juce::jmax (mid, angle), true);
+            g.setColour (s.findColour (juce::Slider::rotarySliderFillColourId));
+            g.strokePath (value, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+
+        const juce::Point<float> tip (c.x + (radius - 3.0f) * std::sin (angle), c.y - (radius - 3.0f) * std::cos (angle));
+        g.setColour (s.findColour (juce::Slider::thumbColourId));
+        g.drawLine (juce::Line<float> (c, tip), 2.0f);
+    }
+};
+
 static void setupField (juce::Label& l)
 {
     l.setEditable (false, true, false);   // double-click to type
@@ -28,6 +59,47 @@ DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f, Plugin
     addAndMakeVisible (strip);
     addAndMakeVisible (slot1);
     addAndMakeVisible (slot2);
+
+    trimKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    trimLook = std::make_unique<TrimKnobLook>();
+    trimKnob.setLookAndFeel (trimLook.get());
+    trimKnob.setRange (-Mixer::trimRangeDb, Mixer::trimRangeDb, 0.1);
+    trimKnob.setValue (0.0, juce::dontSendNotification);
+    trimKnob.setDoubleClickReturnValue (true, 0.0);
+    trimKnob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    trimKnob.setMouseDragSensitivity (300);
+    trimKnob.setWantsKeyboardFocus (false);
+    trimKnob.setColour (juce::Slider::rotarySliderFillColourId, toggleOn.brighter (0.3f));
+    trimKnob.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colours::white.withAlpha (0.22f));
+    trimKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white.withAlpha (0.9f));
+    trimKnob.setTooltip ("Trim: raises or lowers deck " + letter() + " by up to 24 dB before its plugins and fader, so files of "
+                         "very different loudness arrive at similar levels. Drag up/down (Shift: finer), double-click for 0 dB.");
+    trimKnob.onValueChange = [this]
+    {
+        mixer.setTrimDb (index, (float) trimKnob.getValue());
+        updateTrimText();
+    };
+    trimKnob.onDragEnd = [this] { changed(); };
+    trimKnob.setVelocityBasedMode (false);
+    addAndMakeVisible (trimKnob);
+
+    trimCaption.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
+    trimCaption.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (trimCaption);
+    trimValue.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.9f));
+    trimValue.setJustificationType (juce::Justification::centredLeft);
+    trimValue.setEditable (false, true, false);
+    trimValue.setTooltip ("Trim in dB (double-click to type)");
+    trimValue.onTextChange = [this]
+    {
+        const auto t = trimValue.getText().replace (juce::String::fromUTF8 ("\xe2\x88\x92"), "-").retainCharacters ("0123456789.-+");
+        if (t.containsAnyOf ("0123456789"))
+            trimKnob.setValue (juce::jlimit ((double) -Mixer::trimRangeDb, (double) Mixer::trimRangeDb, t.getDoubleValue()), juce::sendNotificationSync);
+        updateTrimText();
+        changed();
+    };
+    addAndMakeVisible (trimValue);
+    updateTrimText();
     strip.onFragmentChanged = [this] (int64_t in, int64_t out) { setFragment (in, out); };
     strip.onFragmentDragEnded = [this] { changed(); };
 
@@ -127,6 +199,11 @@ DeckView::DeckView (int deckIndex, Mixer& m, juce::AudioFormatManager& f, Plugin
     updateFields();
 }
 
+DeckView::~DeckView()
+{
+    trimKnob.setLookAndFeel (nullptr);
+}
+
 //==============================================================================
 void DeckView::openFileDialog()
 {
@@ -174,6 +251,14 @@ void DeckView::togglePlay()
         player.play();
     }
     refresh();
+}
+
+void DeckView::updateTrimText()
+{
+    const double db = trimKnob.getValue();
+    juce::String t = (db > 0.05 ? "+" : "") + juce::String (db, 1);
+    if (! trimValue.isBeingEdited())
+        trimValue.setText (t.replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92")) + " dB", juce::dontSendNotification);
 }
 
 void DeckView::refreshSlots()
@@ -236,6 +321,14 @@ void DeckView::refresh()
         playButton.setToggleState (playing, juce::dontSendNotification);
     }
 
+    // The trim follows a MIDI controller.
+    const float trimNow = mixer.getTrimDb (index);
+    if (! trimKnob.isMouseButtonDown() && std::abs (trimKnob.getValue() - (double) trimNow) > 0.049)
+    {
+        trimKnob.setValue (trimNow, juce::dontSendNotification);
+        updateTrimText();
+    }
+
     // Silenced by mute or by another deck's solo: the deck's name dims.
     const bool audible = mixer.isAudible (index);
     if (audible != shownAudible)
@@ -255,6 +348,8 @@ void DeckView::writeState (juce::PropertySet& s) const
     s.setValue (key ("loop"), player.isLooping());
     s.setValue (key ("reverse"), player.isReversed());
     s.setValue (key ("mute"), mixer.isMuted (index));
+    s.setValue (key ("trim"), (double) mixer.getTrimDb (index));
+    s.setValue (key ("fader"), (double) mixer.getFaderPosition (index));
     s.setValue (key ("solo"), mixer.isSoloed (index));
     s.setValue (key ("fadeMs"), player.getCrossfadeMs());
     s.setValue (key ("fadeShape"), (int) player.getCrossfadeShape());
@@ -267,6 +362,10 @@ void DeckView::readState (const juce::PropertySet& s)
     player.setLoop (loopButton.getToggleState());
     reverseButton.setToggleState (s.getBoolValue (key ("reverse"), false), juce::dontSendNotification);
     player.setReverse (reverseButton.getToggleState());
+    trimKnob.setValue (s.getDoubleValue (key ("trim"), 0.0), juce::dontSendNotification);
+    mixer.setTrimDb (index, (float) trimKnob.getValue());
+    updateTrimText();
+    mixer.setFaderPosition (index, (float) s.getDoubleValue (key ("fader"), Mixer::unityPosition));
     muteButton.setToggleState (s.getBoolValue (key ("mute"), false), juce::dontSendNotification);
     mixer.setMute (index, muteButton.getToggleState());
     soloButton.setToggleState (s.getBoolValue (key ("solo"), false), juce::dontSendNotification);
@@ -350,6 +449,11 @@ void DeckView::resized()
 
     auto slots = r.removeFromBottom (26);
     r.removeFromBottom (8);
+    trimCaption.setBounds (slots.removeFromLeft (34));
+    trimKnob.setBounds (slots.removeFromLeft (32).expanded (0, 4));
+    slots.removeFromLeft (2);
+    trimValue.setBounds (slots.removeFromLeft (66));
+    slots.removeFromLeft (8);
     slot1.setBounds (slots.removeFromLeft (200));
     slotArrow = slots.removeFromLeft (28).reduced (5, 0);
     slot2.setBounds (slots.removeFromLeft (200));

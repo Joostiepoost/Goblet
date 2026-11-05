@@ -1,4 +1,4 @@
-// MainComponent.cpp — step 3: plugin slots, latency alignment.
+// MainComponent.cpp — step 4: trims, faders, MIDI mappings.
 
 #include "MainComponent.h"
 #include "UI/TimeFormat.h"
@@ -36,6 +36,9 @@ MainComponent::MainComponent()
     audioOnButton.onClick = [this] { setAudioEnabled (audioOnButton.getToggleState()); };
     pluginsButton.setTooltip ("Scan for AU and VST3 plugins");
     pluginsButton.onClick = [this] { pluginHost.showScanner(); };
+    midiButton.setTooltip ("MIDI mappings: which controller drives which fader, trim or plugin parameter (Shift-Cmd-M). Lights up when MIDI arrives.");
+    midiButton.onClick = [this] { showMidiWindow(); };
+    midiButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2f6fb8));
 
     for (int q = 0; q < numQualities; ++q)
         qualityBox.addItem (juce::String (kernelSpec ((Quality) q).name) + "  (" + juce::String (kernelSpec ((Quality) q).taps) + ")", q + 1);
@@ -47,7 +50,7 @@ MainComponent::MainComponent()
         if (! restoring) saveSettings();
     };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &pluginsButton, &qualityBox })
+    for (auto* c : std::initializer_list<juce::Component*> { &playAllButton, &stopAllButton, &audioButton, &audioOnButton, &pluginsButton, &midiButton, &qualityBox })
     {
         c->setWantsKeyboardFocus (false);
         addAndMakeVisible (c);
@@ -66,6 +69,8 @@ MainComponent::MainComponent()
 
     addAndMakeVisible (sumMeter);
     addAndMakeVisible (mixerPanel);
+    mixerPanel.onFaderMoved = [this] { if (! restoring) saveSettings(); };
+    midiMappings.onChanged = [this] { if (! restoring) saveSettings(); };
 
     // Decks
     for (int i = 0; i < Mixer::numDecks; ++i)
@@ -84,6 +89,9 @@ MainComponent::MainComponent()
     const auto err = deviceManager.initialise (0, 2, audioState.get(), true);
     deviceManager.addAudioCallback (&mixer);
     deviceManager.addChangeListener (this);
+    deviceManager.addMidiInputDeviceCallback ({}, &mixer.getCcTable());
+    midiInputChoice = settings->getValue ("midiInput", {});
+    applyMidiInputs();
 
     pluginHost.onStatus = [this] (const juce::String& s) { setStatus (s); };
     pluginHost.onChanged = [this]
@@ -106,8 +114,57 @@ MainComponent::~MainComponent()
     saveSettings();
     pluginHost.save();
     pluginHost.closeAllEditors();
+    midiWindow = nullptr;
+    deviceManager.removeMidiInputDeviceCallback ({}, &mixer.getCcTable());
     deviceManager.removeAudioCallback (&mixer);
     deviceManager.removeChangeListener (this);
+}
+
+//==============================================================================
+void MainComponent::applyMidiInputs()
+{
+    const auto devices = juce::MidiInput::getAvailableDevices();
+    juce::StringArray ids;
+    for (auto& d : devices) ids.add (d.identifier);
+    const bool listChanged = ids != knownMidiInputs;
+    knownMidiInputs = ids;
+
+    for (auto& d : devices)
+    {
+        const bool want = midiInputChoice.isEmpty() || d.identifier == midiInputChoice;
+        if (deviceManager.isMidiInputDeviceEnabled (d.identifier) != want)
+            deviceManager.setMidiInputDeviceEnabled (d.identifier, want);
+    }
+
+    if (listChanged && midiWindow != nullptr)
+        if (auto* panel = dynamic_cast<MidiPanel*> (midiWindow->getContentComponent()))
+            panel->refreshDevices();
+}
+
+void MainComponent::showMidiWindow()
+{
+    if (midiWindow != nullptr)
+    {
+        midiWindow->toFront (true);
+        return;
+    }
+
+    auto panel = std::make_unique<MidiPanel> (midiMappings, mixer);
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    panel->getDeviceChoice = [safeThis] { return safeThis != nullptr ? safeThis->midiInputChoice : juce::String(); };
+    panel->onDeviceChosen = [safeThis] (const juce::String& choice)
+    {
+        if (safeThis == nullptr) return;
+        safeThis->midiInputChoice = choice;
+        safeThis->properties.getUserSettings()->setValue ("midiInput", choice);
+        safeThis->applyMidiInputs();
+    };
+    panel->refreshDevices();
+
+    midiWindow = std::make_unique<MidiWindow> (std::move (panel), [safeThis]
+    {
+        juce::MessageManager::callAsync ([safeThis] { if (safeThis != nullptr) safeThis->midiWindow = nullptr; });
+    });
 }
 
 //==============================================================================
@@ -154,6 +211,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
     {
         setAudioEnabled (! audioEnabled);
+        return true;
+    }
+
+    if (key == juce::KeyPress ('m', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+    {
+        showMidiWindow();
         return true;
     }
 
@@ -208,6 +271,9 @@ void MainComponent::loadSettings()
 
     for (auto& d : decks)
         d->readState (s);
+
+    auto xml = s.getXmlValue ("midiMappings");
+    midiMappings.restore (xml.get());
 }
 
 void MainComponent::saveSettings()
@@ -216,6 +282,8 @@ void MainComponent::saveSettings()
     s.setValue ("quality", qualityBox.getSelectedId() - 1);
     for (auto& d : decks)
         d->writeState (s);
+    if (auto xml = midiMappings.createXml())
+        s.setValue ("midiMappings", xml.get());
     properties.saveIfNeeded();
 }
 
@@ -232,6 +300,12 @@ void MainComponent::timerCallback()
         d->refresh();
     mixerPanel.refresh();
     sumMeter.refresh();
+
+    // The MIDI button lights briefly when MIDI arrives; new MIDI devices are picked up.
+    const auto count = mixer.getCcTable().messageCount();
+    if (count != lastMidiCount) { lastMidiCount = count; midiFlash = 4; }
+    if (midiFlash > 0 && --midiFlash == 0) midiButton.setToggleState (false, juce::dontSendNotification);
+    else if (midiFlash > 0) midiButton.setToggleState (true, juce::dontSendNotification);
 
     // CPU twice a second.
     static int tick = 0;
@@ -276,6 +350,7 @@ void MainComponent::timerCallback()
     // Plugin latencies can change at any time (some plugins change theirs with a setting).
     if (tick % 30 == 0)
     {
+        applyMidiInputs();
         for (auto& d : decks) d->refreshSlots();
         mixerPanel.refreshSlots();
     }
@@ -330,6 +405,8 @@ void MainComponent::resized()
     audioOnButton.setBounds (bar.removeFromLeft (84));
     bar.removeFromLeft (6);
     pluginsButton.setBounds (bar.removeFromLeft (84));
+    bar.removeFromLeft (6);
+    midiButton.setBounds (bar.removeFromLeft (70));
     cpuLabel.setBounds (bar.removeFromRight (100));
     bar.removeFromRight (16);
     sumMeter.setBounds (bar.removeFromRight (200));

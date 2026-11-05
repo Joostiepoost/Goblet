@@ -61,6 +61,12 @@ public:
     // plugins are loaded back by the caller.
     std::unique_ptr<juce::XmlElement> createXml (const juce::String& tag) const;
 
+    //== Audio thread (MIDI) =================================================
+    // A plugin parameter, normalised 0..1. They take the chain's lock only if it
+    // is free (a plugin being swapped in is skipped); getParameter returns -1 then.
+    void setParameter (int slot, int index, float value) noexcept;
+    float getParameter (int slot, int index) const noexcept;
+
     //== Audio thread ========================================================
     // Processes a stereo buffer in place.
     void process (juce::AudioBuffer<float>& io, int numSamples) noexcept;
@@ -94,7 +100,7 @@ private:
     void processSlot (Slot&, juce::AudioBuffer<float>& io, int start, int numSamples) noexcept;
 
     std::array<Slot, slotsPerChain> slots;
-    juce::SpinLock swapLock;
+    mutable juce::SpinLock swapLock;
     juce::AudioPlayHead* playHead = nullptr;
     std::atomic<int> processedLatency { 0 };
     double sampleRate = 48000.0;

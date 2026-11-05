@@ -91,25 +91,83 @@ MixerPanel::MixerPanel (Mixer& m, PluginHost& host) : mixer (m)
         addAndMakeVisible (*meters[i]);
         auto& l = peakLabels[i];
         l.setJustificationType (juce::Justification::centred);
-        l.setFont (juce::FontOptions (12.5f));
-        l.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.8f));
-        l.setTooltip ("Highest peak of the last 1.5 s, before mute and solo");
+        l.setFont (juce::FontOptions (11.0f));
+        l.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
+        l.setTooltip ("Peak: the highest level of the last 1.5 s, after the deck's plugins, before mute and solo");
         addAndMakeVisible (l);
+
+        auto& f = faders[i];
+        f.setSliderStyle (juce::Slider::LinearVertical);
+        f.setRange (0.0, 1.0, 0.0);
+        f.setValue (Mixer::unityPosition, juce::dontSendNotification);
+        f.setDoubleClickReturnValue (true, Mixer::unityPosition);
+        f.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        f.setWantsKeyboardFocus (false);
+        f.setColour (juce::Slider::trackColourId, juce::Colour (0xff4a9eff).withAlpha (0.5f));
+        f.setColour (juce::Slider::backgroundColourId, juce::Colours::black.withAlpha (0.4f));
+        f.setColour (juce::Slider::thumbColourId, juce::Colour (0xffd8dde3));
+        f.setTooltip ("Fader " + juce::String::charToString ((juce::juce_wchar) ('A' + i)) + ": up to +12 dB. Double-click for 0 dB; "
+                      "Shift-drag for fine moves. MIDI... maps a controller to it.");
+        f.onValueChange = [this, i]
+        {
+            mixer.setFaderPosition (i, (float) faders[i].getValue());
+            updateFaderText (i);
+        };
+        f.onDragEnd = [this] { if (onFaderMoved) onFaderMoved(); };
+        addAndMakeVisible (f);
+
+        auto& fl = faderLabels[i];
+        fl.setJustificationType (juce::Justification::centred);
+        fl.setFont (juce::FontOptions (12.5f));
+        fl.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.9f));
+        fl.setEditable (false, true, false);
+        fl.setTooltip ("Fader level in dB (double-click to type)");
+        fl.onTextChange = [this, i]
+        {
+            const auto t = faderLabels[i].getText().replace (juce::String::fromUTF8 ("\xe2\x88\x92"), "-");
+            if (t.containsIgnoreCase ("inf") || t.contains (juce::String::fromUTF8 ("\xe2\x88\x9e")))
+                faders[i].setValue (0.0, juce::sendNotificationSync);
+            else if (t.containsAnyOf ("0123456789"))
+                faders[i].setValue (Mixer::faderDbToPosition ((float) juce::jlimit (-100.0, 12.0, t.retainCharacters ("0123456789.-+").getDoubleValue())),
+                                    juce::sendNotificationSync);
+            updateFaderText (i);
+            if (onFaderMoved) onFaderMoved();
+        };
+        addAndMakeVisible (fl);
+        updateFaderText (i);
     }
+}
+
+void MixerPanel::updateFaderText (int i)
+{
+    const float db = Mixer::faderPositionToDb ((float) faders[i].getValue());
+    juce::String t;
+    if (db <= -99.0f) t = juce::String::fromUTF8 ("\xe2\x88\x92\xe2\x88\x9e");
+    else t = ((db > 0.05f ? "+" : "") + juce::String (db, 1)).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92"));
+    if (! faderLabels[i].isBeingEdited())
+        faderLabels[i].setText (t + " dB", juce::dontSendNotification);
 }
 
 void MixerPanel::refresh()
 {
     for (int i = 0; i < Mixer::numDecks; ++i)
     {
+        // The fader follows a MIDI controller (or a restored setting).
+        const float pos = mixer.getFaderPosition (i);
+        if (! faders[i].isMouseButtonDown() && std::abs (faders[i].getValue() - (double) pos) > 1.0e-5)
+        {
+            faders[i].setValue (pos, juce::dontSendNotification);
+            updateFaderText (i);
+        }
+
         meters[i]->push (mixer.takeDeckPeak (i, 0), mixer.takeDeckPeak (i, 1));
         const bool a = mixer.isAudible (i);
         meters[i]->setDimmed (! a);
         if (a != audible[i]) { audible[i] = a; repaint(); }
 
         const float db = meters[i]->heldDb();
-        peakLabels[i].setText (db <= -99.0f ? juce::String::fromUTF8 ("\xe2\x88\x92\xe2\x88\x9e")
-                                            : juce::String (db, 1).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92")),
+        peakLabels[i].setText ("pk " + (db <= -99.0f ? juce::String::fromUTF8 ("\xe2\x88\x92\xe2\x88\x9e")
+                                                     : juce::String (db, 1).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92"))),
                                juce::dontSendNotification);
     }
 }
@@ -143,23 +201,28 @@ void MixerPanel::paint (juce::Graphics& g)
         g.drawText (juce::String::charToString ((juce::juce_wchar) ('A' + i)), stripAreas[i].withHeight (20), juce::Justification::centred);
     }
 
-    // dB scale beside the first meter.
-    if (meters[0] != nullptr)
+    // The fader scale, beside the first fader.
     {
-        auto m = meters[0]->getBounds();
+        const auto& f = faders[0];
+        auto b = f.getBounds();
         g.setFont (juce::FontOptions (10.5f));
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
-        for (float db : { 0.0f, -6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f })
+        for (float db : { 12.0f, 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -40.0f, -100.0f })
         {
-            const float y = (float) m.getBottom() - PeakMeter::dbToFraction (db) * (float) m.getHeight();
-            g.drawText (juce::exactlyEqual (db, 0.0f) ? juce::String ("0") : juce::String ((int) db).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92")),
-                        juce::Rectangle<float> ((float) m.getX() - 34.0f, y - 6.0f, 28.0f, 12.0f), juce::Justification::centredRight);
+            const float y = (float) b.getY() + (float) f.getPositionOfValue (Mixer::faderDbToPosition (db));
+            juce::String t = db <= -99.0f ? juce::String::fromUTF8 ("\xe2\x88\x92\xe2\x88\x9e")
+                                         : (db > 0.0f ? "+" : "") + juce::String ((int) db).replace ("-", juce::String::fromUTF8 ("\xe2\x88\x92"));
+            g.setColour (juce::Colours::white.withAlpha (juce::exactlyEqual (db, 0.0f) ? 0.8f : 0.45f));
+            g.drawText (t, juce::Rectangle<float> ((float) stripAreas[0].getX() - 36.0f, y - 6.0f, 30.0f, 12.0f), juce::Justification::centredRight);
+            g.setColour (juce::Colours::white.withAlpha (juce::exactlyEqual (db, 0.0f) ? 0.35f : 0.12f));
+            for (int i = 0; i < Mixer::numDecks; ++i)
+            {
+                auto fb = faders[i].getBounds();
+                g.drawHorizontalLine ((int) y, (float) fb.getX() - 2.0f, (float) fb.getX() + 4.0f);
+            }
         }
     }
 
     g.setFont (juce::FontOptions (11.5f));
-    g.setColour (juce::Colours::white.withAlpha (0.35f));
-    g.drawText ("faders: step 4", faderNote, juce::Justification::centred);
     g.setColour (juce::Colours::white.withAlpha (0.45f));
     g.drawText ("after the fader", postCaption, juce::Justification::centred);
 
@@ -188,9 +251,7 @@ void MixerPanel::resized()
     // Under each meter: the two slots after the fader, then a caption.
     postCaption = r.removeFromBottom (16).withTrimmedLeft (36);
     auto slotRows = r.removeFromBottom (54).withTrimmedLeft (36);
-    r.removeFromBottom (6);
-    faderNote = r.removeFromBottom (16).withTrimmedLeft (36);
-    r.removeFromBottom (4);
+    r.removeFromBottom (8);
 
     r.removeFromLeft (36);    // the dB scale
     const int w = r.getWidth() / Mixer::numDecks;
@@ -199,9 +260,13 @@ void MixerPanel::resized()
         auto s = r.removeFromLeft (w);
         stripAreas[i] = s;
         s.removeFromTop (24);
-        peakLabels[i].setBounds (s.removeFromBottom (20));
+        peakLabels[i].setBounds (s.removeFromBottom (16));
+        faderLabels[i].setBounds (s.removeFromBottom (20));
         s.removeFromBottom (4);
-        meters[i]->setBounds (s.withSizeKeepingCentre (18, s.getHeight()));
+        auto pair = s.withSizeKeepingCentre (48, s.getHeight());
+        faders[i].setBounds (pair.removeFromLeft (28));
+        pair.removeFromLeft (6);
+        meters[i]->setBounds (pair.withTrimmedTop (8).withTrimmedBottom (8));
 
         auto col = slotRows.withX (stripAreas[i].getX()).withWidth (w).reduced (3, 0);
         postSlots[i][0]->setBounds (col.removeFromTop (25));

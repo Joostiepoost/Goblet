@@ -21,6 +21,87 @@ Mixer::~Mixer()
         c = nullptr;
 }
 
+//==============================================================================
+// The fader law: dB at these positions, straight lines in dB between them.
+static const float lawPos[] = { 0.02f, 0.10f, 0.25f, 0.50f, 0.80f, 1.00f };
+static const float lawDb[]  = { -70.f, -50.f, -30.f, -12.f,  0.0f, 12.0f };
+static constexpr int lawPoints = 6;
+
+float Mixer::faderPositionToDb (float p) noexcept
+{
+    if (p <= 0.0f) return -100.0f;
+    if (p < lawPos[0]) return juce::Decibels::gainToDecibels (faderGain (p), -100.0f);
+    for (int i = 1; i < lawPoints; ++i)
+        if (p <= lawPos[i])
+            return lawDb[i - 1] + (lawDb[i] - lawDb[i - 1]) * (p - lawPos[i - 1]) / (lawPos[i] - lawPos[i - 1]);
+    return lawDb[lawPoints - 1];
+}
+
+float Mixer::faderDbToPosition (float db) noexcept
+{
+    if (db <= -100.0f) return 0.0f;
+    if (db < lawDb[0])
+    {
+        // Below -70 dB the gain falls in a straight line to silence.
+        const float g = juce::Decibels::decibelsToGain (db), g0 = juce::Decibels::decibelsToGain (lawDb[0]);
+        return lawPos[0] * juce::jlimit (0.0f, 1.0f, g / g0);
+    }
+    for (int i = 1; i < lawPoints; ++i)
+        if (db <= lawDb[i])
+            return lawPos[i - 1] + (lawPos[i] - lawPos[i - 1]) * (db - lawDb[i - 1]) / (lawDb[i] - lawDb[i - 1]);
+    return 1.0f;
+}
+
+float Mixer::faderGain (float p) noexcept
+{
+    if (p <= 0.0f) return 0.0f;
+    if (p < lawPos[0]) return juce::Decibels::decibelsToGain (lawDb[0]) * p / lawPos[0];
+    return juce::Decibels::decibelsToGain (faderPositionToDb (p));
+}
+
+void Mixer::setTrimDb (int index, float db, float rampMs) noexcept
+{
+    auto& s = strips[(size_t) index];
+    s.trimRampMs.store (rampMs);
+    s.trimDb.store (juce::jlimit (-trimRangeDb, trimRangeDb, db));
+}
+
+void Mixer::setFaderPosition (int index, float position, float rampMs) noexcept
+{
+    auto& s = strips[(size_t) index];
+    s.faderRampMs.store (rampMs);
+    s.faderPos.store (juce::jlimit (0.0f, 1.0f, position));
+}
+
+void Mixer::applyRamp (Strip::Ramp& r, float target, float rampMs, double rate, float* const* buf, int n) noexcept
+{
+    if (! juce::exactlyEqual (target, r.target))
+    {
+        r.target = target;
+        r.left = juce::jmax (1, (int) std::lround (rampMs * 0.001 * rate));
+        r.step = (target - r.current) / (float) r.left;
+    }
+
+    if (r.left == 0)
+    {
+        if (! juce::exactlyEqual (r.current, 1.0f))
+            for (int ch = 0; ch < 2; ++ch)
+                juce::FloatVectorOperations::multiply (buf[ch], r.current, n);
+        return;
+    }
+
+    for (int i = 0; i < n; ++i)
+    {
+        if (r.left > 0)
+        {
+            r.current += r.step;
+            if (--r.left == 0) r.current = r.target;
+        }
+        buf[0][i] *= r.current;
+        buf[1][i] *= r.current;
+    }
+}
+
 int Mixer::getAlignedLatency() const noexcept
 {
     int l = 0;
@@ -74,6 +155,11 @@ void Mixer::prepare (double sampleRate, int maximumBlockSize)
         strips[(size_t) i].buffer.setSize (2, n, false, false, true);
         strips[(size_t) i].gain = isAudible (i) ? 1.0f : 0.0f;
         strips[(size_t) i].align.clear();
+        auto& st = strips[(size_t) i];
+        st.trim.current = st.trim.target = juce::Decibels::decibelsToGain (st.trimDb.load());
+        st.trim.left = 0;
+        st.fader.current = st.fader.target = faderGain (st.faderPos.load());
+        st.fader.left = 0;
     }
 
     for (auto& c : chains)
@@ -103,6 +189,10 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
     bool anySolo = false;
     for (auto& s : strips) anySolo = anySolo || s.solo.load();
 
+    // MIDI: faders, trims and plugin parameters follow their controllers.
+    const double rate = outputRate.load();
+    midi.process (*this, ccTable, numSamples, rate);
+
     // Host playhead for the plugins.
     if (startAll) headSamples.store (0);
     bool playingNow = false;
@@ -121,9 +211,11 @@ void Mixer::process (float* const* outputs, int numOutputs, int numSamples) noex
         d.process (buf, numSamples, kernel);
         playingNow = playingNow || d.isPlaying();
 
-        // The deck's plugins: before the fader, (fader: step 4), after it.
+        // Trim, the plugins before the fader, the fader, the plugins after it.
         juce::AudioBuffer<float> view (buf, 2, numSamples);
+        applyRamp (s.trim, juce::Decibels::decibelsToGain (s.trimDb.load()), s.trimRampMs.load(), rate, buf, numSamples);
         chains[(size_t) preChain (i)]->process (view, numSamples);
+        applyRamp (s.fader, faderGain (s.faderPos.load()), s.faderRampMs.load(), rate, buf, numSamples);
         chains[(size_t) postChain (i)]->process (view, numSamples);
 
         // Meter, before mute and solo.

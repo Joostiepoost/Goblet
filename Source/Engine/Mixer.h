@@ -1,10 +1,14 @@
 // Mixer.h — the audio callback: three decks summed to the stereo output.
 //
 // Signal per deck:
-//   player -> pre-fader slots -> (fader, step 4) -> post-fader slots -> meter
+//   player -> trim -> pre-fader slots -> fader -> post-fader slots -> meter
 //          -> latency alignment -> mute/solo -> sum
 // and on the sum:  sum slots -> meter, clip lamp -> output
 //
+// * Trim (-24..+24 dB) and fader (position 0..1, see faderPositionToDb) are
+//   smoothed per sample over a ramp time (20 ms from the mouse, the mapping's
+//   smoothing time from MIDI), so a 7-bit controller is not heard in steps.
+// * MIDI mappings are applied at the start of every block (MidiControl.h).
 // * Mute and solo ramp over 5 ms, so neither clicks.
 // * The deck meters read before mute and solo, so a muted deck still shows
 //   that it is playing and how loud it will be when it comes in.
@@ -19,6 +23,7 @@
 #include <JuceHeader.h>
 #include "DeckPlayer.h"
 #include "PluginChain.h"
+#include "MidiControl.h"
 
 #include <array>
 #include <atomic>
@@ -68,6 +73,26 @@ public:
     bool isSoloed (int index) const noexcept              { return strips[(size_t) index].solo.load(); }
     bool isAudible (int index) const noexcept;
 
+    // Trim, in dB (-24..+24), before the deck's plugins.
+    static constexpr float trimRangeDb = 24.0f;
+    void setTrimDb (int index, float db, float rampMs = 20.0f) noexcept;
+    float getTrimDb (int index) const noexcept            { return strips[(size_t) index].trimDb.load(); }
+    static float trimDbToNormal (float db) noexcept       { return juce::jlimit (0.0f, 1.0f, (db + trimRangeDb) / (2.0f * trimRangeDb)); }
+    static float normalToTrimDb (float v) noexcept        { return juce::jlimit (-trimRangeDb, trimRangeDb, (2.0f * v - 1.0f) * trimRangeDb); }
+
+    // Fader, as a position 0..1 (the fader law: +12 dB at the top, 0 dB at 0.8,
+    // -12 dB at 0.5, -30 dB at 0.25, silence at the bottom).
+    static constexpr float unityPosition = 0.8f;
+    void setFaderPosition (int index, float position, float rampMs = 20.0f) noexcept;
+    float getFaderPosition (int index) const noexcept     { return strips[(size_t) index].faderPos.load(); }
+    static float faderPositionToDb (float position) noexcept;    // -100 = silence
+    static float faderDbToPosition (float db) noexcept;
+    static float faderGain (float position) noexcept;
+
+    // MIDI.
+    CcTable& getCcTable() noexcept                        { return ccTable; }
+    MidiEngine& getMidi() noexcept                        { return midi; }
+
     // Meters: the highest absolute sample since the last call (and resets it).
     // channel 0 = left, 1 = right. Read from the message thread.
     float takeDeckPeak (int index, int channel) noexcept  { return strips[(size_t) index].peak[(size_t) channel].exchange (0.0f); }
@@ -106,6 +131,10 @@ private:
     {
         std::atomic<bool> mute { false }, solo { false };
         std::array<std::atomic<float>, 2> peak {};
+        std::atomic<float> trimDb { 0.0f }, trimRampMs { 20.0f };
+        std::atomic<float> faderPos { unityPosition }, faderRampMs { 20.0f };
+        struct Ramp { float current = 1.0f, target = 1.0f, step = 0.0f; int left = 0; };
+        Ramp trim, fader;                      // audio thread: the smoothed gains
         float gain = 1.0f;                     // audio thread: the current mute/solo gain
         juce::AudioBuffer<float> buffer;       // audio thread: the deck's output for this block
         AlignDelay align;
@@ -114,6 +143,9 @@ private:
     std::array<DeckPlayer, numDecks> decks;
     std::array<Strip, numDecks> strips;
     std::array<std::unique_ptr<PluginChain>, numChains> chains;
+    CcTable ccTable;
+    MidiEngine midi;
+    static void applyRamp (Strip::Ramp&, float target, float rampMs, double rate, float* const* buf, int numSamples) noexcept;
     std::atomic<bool> headPlaying { false };
     std::atomic<juce::int64> headSamples { 0 };
     std::atomic<int> quality { (int) Quality::Max };

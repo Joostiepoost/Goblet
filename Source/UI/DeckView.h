@@ -3,7 +3,7 @@
 //   A  file name · rate · length   [Open...] [Play] [M] [S] [Loop] [Rev]
 //   [ waveform with in and out flags, playhead                          ]
 //   In [..]  Out [..]  Crossfade [..] ms  [shape]  Tension [----]
-//   [1 · plugin] -> [2 · plugin]                          to fader A ->
+//   Trim (o) +3.0 dB  [1 · plugin] -> [2 · plugin]       to fader A ->
 //
 // It talks to its DeckPlayer and to the Mixer (mute, solo) directly;
 // MainComponent only saves and restores its state and forwards shortcuts.
@@ -23,6 +23,7 @@ class DeckView : public juce::Component,
 {
 public:
     DeckView (int index, Mixer& mixer, juce::AudioFormatManager& formats, PluginHost& host);
+    ~DeckView() override;
 
     void loadFile (const juce::File& file);
     void openFileDialog();
@@ -54,6 +55,7 @@ public:
 private:
     void setFragment (int64_t in, int64_t out);
     void updateFields();
+    void updateTrimText();
     void applyCrossfade();
     void changed()                       { if (onChanged) onChanged(); }
     void status (const juce::String& s)  { if (onStatus) onStatus (s); }
@@ -66,6 +68,10 @@ private:
 
     SourceStrip strip;
     SlotButton slot1, slot2;
+    juce::Label trimCaption { {}, "Trim" }, trimValue;
+    struct TrimKnobLook;
+    std::unique_ptr<TrimKnobLook> trimLook;     // before the knob, so it outlives it
+    juce::Slider trimKnob;
     juce::Rectangle<int> slotArrow, toFaderArea;
     juce::TextButton openButton { "Open..." }, playButton, muteButton { "M" }, soloButton { "S" }, loopButton { "Loop" }, reverseButton { "Rev" };
     juce::Label inCaption { {}, "In" }, inField, outCaption { {}, "Out" }, outField;

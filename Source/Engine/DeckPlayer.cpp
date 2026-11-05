@@ -238,6 +238,10 @@ void DeckPlayer::process (float* const* out, int numSamples, const SincKernel& k
     fade.length = juce::jmax (1, fadeLen);
     const bool useFades = fadeLen > 0;
 
+    // Room past the out point (before the in point when reversed) for the old pass to fade out in.
+    const double room = rev ? (double) a : (double) (len - b);
+    const bool earlySeam = room < r * (double) fade.length + 2.0 * (double) kernel.halfWidth();
+
     // Reverse switched: the old direction fades out while the mirrored one fades in.
     if (rev != lastReverse)
     {
@@ -315,10 +319,20 @@ void DeckPlayer::process (float* const* out, int numSamples, const SincKernel& k
             rampOut = rampOutLen = juce::jmin (rampOut, declickLen);
         }
 
-        if (q >= fragLen)
+        // Loop seam. Normally the old pass reads on past the out point and fades
+        // out while the new pass fades in from the in point. When the file has no
+        // sound left past the out point (the fragment ends at the end of the file,
+        // or at its start when reversed), the seam starts one crossfade earlier
+        // instead, so the old pass ends exactly at the file's edge.
+        if (looping && useFades && earlySeam && fade.remaining == 0 && q + r * (double) fade.length >= fragLen && q < fragLen)
         {
-            // Loop seam: the old pass reads on past the out point and fades out,
-            // the new pass fades in from the in point.
+            fade.pos = rev ? revStart - q : (double) a + q;
+            fade.dir = rev ? -1 : 1;
+            fade.remaining = fade.length;
+            q = 0.0;
+        }
+        else if (q >= fragLen)
+        {
             if (useFades && looping)
             {
                 fade.pos = rev ? revStart - q : (double) a + q;

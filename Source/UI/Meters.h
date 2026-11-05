@@ -35,8 +35,8 @@ private:
     bool dimmed = false;
 };
 
-// The mixer column: one strip per deck (meter, peak readout, the two slots
-// after the fader), and the sum's two slots. The faders arrive in step 4.
+// The mixer column: one strip per deck (fader, meter, fader and peak
+// readouts, the two slots after the fader), and the sum's two slots.
 class MixerPanel : public juce::Component
 {
 public:
@@ -45,15 +45,19 @@ public:
     void refresh();      // from MainComponent's timer
     void refreshSlots(); // a plugin was loaded, removed or bypassed
 
+    std::function<void()> onFaderMoved;   // save the settings
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
     Mixer& mixer;
     std::unique_ptr<PeakMeter> meters[Mixer::numDecks];
-    juce::Label peakLabels[Mixer::numDecks];
+    juce::Label peakLabels[Mixer::numDecks], faderLabels[Mixer::numDecks];
+    juce::Slider faders[Mixer::numDecks];
+    void updateFaderText (int deck);
     std::unique_ptr<SlotButton> postSlots[Mixer::numDecks][slotsPerChain], sumSlots[slotsPerChain];
-    juce::Rectangle<int> stripAreas[Mixer::numDecks], faderNote, postCaption, sumArea;
+    juce::Rectangle<int> stripAreas[Mixer::numDecks], postCaption, sumArea;
     bool audible[Mixer::numDecks] = { true, true, true };
 };
 

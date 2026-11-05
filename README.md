@@ -38,12 +38,34 @@ Other options:
 | --- | --- | --- |
 | 1 | One deck: source strip, fragment, loop, reverse, crossfade, quality presets, transport; measurements | done |
 | 2 | Three decks and the sum: meters, clip lamp, Play per deck and Play all, Mute, Solo; audio on/off | done |
-| 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | testing |
-| 4 | Faders and MIDI: dB law, mapping window, smoothing, pickup, reversed ranges, 14-bit switch | |
+| 3 | Plugin slots: two before and two after each fader, two on the sum, plugin windows, latency compensation | done |
+| 4 | Trims and faders (+12 dB headroom), MIDI: mapping window, smoothing, Jump/Pickup, reversed ranges, 14-bit switch | testing |
 | 5 | Live capture: sum and stems, tail, captures panel, snapshots | |
 | 6 | Gesture re-render: replay a take's CCs offline at Render quality | |
 
 The full design is in the Goblet project proposal.
+
+## Using step 4: trims, faders and MIDI
+
+- **Trim** (each deck, left of its plugin slots): raises or lowers the deck by up to 24 dB *before* its plugins and fader, so files of very different loudness arrive at similar levels and the faders start from the same place. Drag up/down (Shift: finer), double-click the knob for 0 dB, or double-click the value to type one.
+- **Faders** (mixer column, beside each meter): the dB law has **+12 dB at the top** and 0 dB at about four fifths of the travel (CC 102 on a 7-bit controller); -12 dB is halfway, -30 dB a quarter of the way up, and the bottom is silence. Double-click a fader for 0 dB, or double-click its value to type one. The scale on the left belongs to the faders; under each strip are the fader's level and the deck's recent peak (pk).
+- **MIDI...** (**Shift-Cmd-M**) opens the mappings window, as in Effet:
+  - the MIDI input at the top (all inputs, none, or one device);
+  - **+ Mapping** adds a row; the first three start on faders A, B and C, on the next free CCs. Up to 16 mappings;
+  - per row: channel, **CC** (chosen in its menu, never by moving a control), **14-bit** (CC 0-31 with its fine part on CC 32-63, for a controller that sends pairs; Touché sends 7-bit), the **target** (a fader, a trim, or any parameter of a loaded plugin), the controller range used (**In**), the target range (**Out**, faders and trims in dB, plugins in their own units; click to type or drag), the **curve**, the **smoothing** time (20 ms by default, so 7-bit steps aren't heard) and the **takeover**;
+  - **Jump**: the target follows the controller as soon as it moves. **Pickup**: after you moved the target with the mouse, the controller takes over only once it passes the target's value (the row's bar turns orange while it waits);
+  - **a crossfade from one CC**: map it to fader A, and again to fader B with the Out range reversed (start +12 dB, end silence);
+  - the **Incoming** list shows every controller that sends, so you can see which CC numbers each Touché axis uses.
+  - The MIDI button lights up when MIDI arrives. Mappings, trims and fader positions are remembered.
+- **Whole-file loops** no longer dip at the loop point: when a fragment ends at the end of its file, there is nothing to read past the out point, so the seam crossfade now starts just before it. (Effet does the same as Goblet did before this fix: a fragment ending exactly at the end of the file dips at each loop by the crossfade length.)
+
+**Worth testing**:
+- Touché on the three faders: slow fades should be smooth, without steps.
+- A crossfade from one Touché axis between two decks (one mapping reversed).
+- Pickup: move a fader with the mouse, then the controller: the fader stays put until the controller passes it.
+- A mapping on a plugin parameter (a filter cutoff, a reverb mix) with its Out range narrowed, typed in the plugin's units.
+- Trims: two files of very different loudness, trimmed so that both sound about equally loud with the faders at 0 dB.
+- Loop a whole file: no dip at the loop point.
 
 ## Using step 3: plugin slots
 
@@ -70,7 +92,7 @@ The full design is in the Goblet project proposal.
 - **Decks B and C** work exactly like deck A (see step 1 below). Keys: **1**, **2**, **3** play or stop a deck.
 - **Play all** (or **Space**) starts every deck that has a file in the same sample.
 - **M** mutes a deck (**Shift-1/2/3**), **S** solos it (**Option-1/2/3**). With any deck soloed, only soloed decks are heard; mute wins over solo. Both ramp over 5 ms, so they never click. A deck silenced by mute or by another deck's solo shows its letter dimmed.
-- **Mixer column**: a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read after the deck's plugins and *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in.
+- **Mixer column**: a fader (step 4) and a stereo peak meter per deck, with a peak-hold line (1.5 s) and the highest recent peak in dB below it. The deck meters read after the deck's plugins and *before* mute and solo, so a muted deck still shows that it is playing and how loud it will be when it comes in.
 - **Sum meter** (top right): what you hear. The red lamp lights when the sum reaches 0 dBFS and stays lit until you click it.
 - **Audio on / Audio off** (**Shift-Cmd-A**): off closes the audio device, so Goblet uses no CPU while it sits in the background. The files and settings stay loaded. Play, Play all or Space turn audio back on.
 
@@ -113,7 +135,7 @@ Everything is remembered between sessions: the file, fragment, loop, reverse, cr
 2. The playhead stays inside the fragment, with reverse switched while playing.
 3. Loop seam and reverse switch: no clicks with a crossfade.
 4. Start, stop and play once: no clicks from the 3 ms ramps.
-5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing.
+5. Play all: decks started together stay sample-aligned. Mute and solo: who is heard in each combination, and no clicks from the ramps. Plugin latency: with a test plugin (10 ms latency) on one deck, both decks still arrive together; bypass switched while playing doesn't click or shift the timing. Trim, faders and MIDI: the fader law, trim and fader levels, a slow 7-bit sweep without zipper steps, 14-bit, a crossfade from one CC, and Pickup.
 6. CPU per deck, per preset, at the rate ratios that occur in practice.
 
 Please commit `report.md` with GitHub Desktop so I can read your M4's CPU table. `report-cloud-test-machine.md` holds the same report from the slower machine the code was written on: there all checks pass, and the costliest realistic case (a 96 kHz file on a 44.1 kHz device at Render) takes about 35% of one core per deck. The M4 should need roughly two thirds of that. In the reverse-switch column, equal power and Bezier show 1.32 and 1.28 rather than 1.00: that is the expected level bump of those shapes on correlated material during the crossfade, not a click.

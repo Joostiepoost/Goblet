@@ -237,6 +237,31 @@ std::unique_ptr<juce::XmlElement> PluginChain::createXml (const juce::String& ta
 }
 
 //==============================================================================
+void PluginChain::setParameter (int slot, int index, float value) noexcept
+{
+    const juce::SpinLock::ScopedTryLockType tl (swapLock);
+    if (! tl.isLocked() || ! juce::isPositiveAndBelow (slot, slotsPerChain)) return;
+    if (auto* p = slots[(size_t) slot].processor.get())
+    {
+        const auto& params = p->getParameters();
+        if (juce::isPositiveAndBelow (index, params.size()))
+            params.getUnchecked (index)->setValue (juce::jlimit (0.0f, 1.0f, value));
+    }
+}
+
+float PluginChain::getParameter (int slot, int index) const noexcept
+{
+    const juce::SpinLock::ScopedTryLockType tl (swapLock);
+    if (! tl.isLocked() || ! juce::isPositiveAndBelow (slot, slotsPerChain)) return -1.0f;
+    if (auto* p = slots[(size_t) slot].processor.get())
+    {
+        const auto& params = p->getParameters();
+        if (juce::isPositiveAndBelow (index, params.size()))
+            return params.getUnchecked (index)->getValue();
+    }
+    return -1.0f;
+}
+
 void PluginChain::process (juce::AudioBuffer<float>& io, int numSamples) noexcept
 {
     const juce::SpinLock::ScopedTryLockType tl (swapLock);

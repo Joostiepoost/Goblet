@@ -48,6 +48,7 @@ set(GOBLET_ENGINE_SOURCES
     Source/Engine/SourceFile.cpp
     Source/Engine/DeckPlayer.cpp
     Source/Engine/PluginChain.cpp
+    Source/Engine/MidiControl.cpp
     Source/Engine/Mixer.cpp)
 
 target_sources(Goblet PRIVATE
@@ -57,7 +58,9 @@ target_sources(Goblet PRIVATE
     Source/UI/SourceStrip.cpp
     Source/UI/DeckView.cpp
     Source/UI/Meters.cpp
-    Source/UI/PluginHost.cpp)
+    Source/UI/PluginHost.cpp
+    Source/UI/MidiMappings.cpp
+    Source/UI/MidiPanel.cpp)
 
 target_compile_definitions(Goblet PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Goblet,JUCE_PRODUCT_NAME>"

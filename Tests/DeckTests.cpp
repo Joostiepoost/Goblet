@@ -13,6 +13,9 @@
 //    Mute and solo: who is heard, and the 5 ms ramps don't click.
 // 5c. Plugin latency: decks with different plugin latencies stay aligned in
 //    the sum; bypassing a plugin neither clicks nor shifts the timing.
+// 5d. Trim, faders and MIDI: the fader law, the trim's gain, a CC driving a
+//    fader (7-bit without zipper steps, 14-bit), a crossfade from one CC with
+//    a reversed range, and Pickup.
 // 6. CPU: time to produce 1 s of stereo output per deck, per preset, at the
 //    rate ratios that occur in practice.
 
@@ -248,6 +251,24 @@ int main (int argc, char* argv[])
 
             line ("| " + c.name + " | " + juce::String (maxStep (seam, skip) / sineStep, 2) + " | " + juce::String (maxStep (rev, skip) / sineStep, 2) + " |");
         }
+
+        // The whole file as the fragment: nothing to read past the out point.
+        {
+            auto whole = sineFile (sRate, 0.1234, freq, amp);
+            juce::String row = "| whole file as fragment, 10 ms equal power: forward / reversed |";
+            for (bool reversed : { false, true })
+            {
+                DeckPlayer d;
+                d.setSource (whole);
+                d.setCrossfade (10.0, CrossfadeShape::equalPower, 0.5);
+                d.setReverse (reversed);
+                d.prepare (sRate, 64);
+                d.startNow();
+                auto y = run (d, sRate, 1.0, Quality::Max);
+                row << " " << juce::String (maxStep (y, skip) / sineStep, 2) << (reversed ? " |" : " /");
+            }
+            line (row);
+        }
         line ("");
     }
 
@@ -438,6 +459,156 @@ int main (int argc, char* argv[])
               "level " + juce::String (peakIn (6000, 11000), 3) + " with the plugin, " + juce::String (peakIn (14000, 23000), 3) + " bypassed, "
               + juce::String (peakIn (26000, 47000), 3) + " back on; largest step " + juce::String (bypassStep, 2)
               + (bypassStep <= 1.05 ? " (no clicks: the dry path is delayed by the plugin's latency, so the timing does not jump)." : " (CLICK)."));
+        line ("");
+    }
+
+    //== 5d. Trim, faders and MIDI ============================================
+    {
+        line ("## Trim, faders and MIDI");
+        line ("");
+        line ("The fader law (position 0..1, as a 7-bit controller sends it):");
+        line ("");
+        line ("| CC | Position | Level |");
+        line ("| --- | --- | --- |");
+        for (int cc : { 127, 114, 102, 89, 64, 32, 13, 3, 0 })
+        {
+            const float p = (float) cc / 127.0f;
+            const float db = Mixer::faderPositionToDb (p);
+            line ("| " + juce::String (cc) + " | " + juce::String (p, 3) + " | " + (db <= -99.0f ? juce::String ("silence") : juce::String (db, 1) + " dB") + " |");
+        }
+        line ("");
+
+        const double rate = 48000.0;
+        auto src = sineFile (rate, 1.0, 1000.0, 0.25, 0.5 * pi);
+        auto rmsOf = [] (const std::vector<float>& y, int from, int to)
+        {
+            double acc = 0.0; int n = 0;
+            for (int i = from; i < to && i < (int) y.size(); ++i) { acc += (double) y[(size_t) i] * y[(size_t) i]; ++n; }
+            return n > 0 ? std::sqrt (acc / n) : 0.0;
+        };
+        auto runMixer = [&] (Mixer& m, int total, std::function<void (int)> atBlock)
+        {
+            std::vector<float> l ((size_t) total, 0.0f), r (l.size(), 0.0f);
+            for (int pos = 0; pos < total; pos += 64)
+            {
+                if (atBlock) atBlock (pos);
+                float* outs[2] = { l.data() + pos, r.data() + pos };
+                m.process (outs, 2, std::min (64, total - pos));
+            }
+            return l;
+        };
+        const double unity = 0.25 / std::sqrt (2.0);
+        auto dbOf = [unity] (double rms) { return 20.0 * std::log10 (juce::jmax (1.0e-9, rms / unity)); };
+
+        // Trim and fader levels.
+        {
+            Mixer m;
+            m.prepare (rate, 64);
+            m.deck (0).setSource (src);
+            m.setTrimDb (0, -6.0f);
+            m.setFaderPosition (0, Mixer::faderDbToPosition (12.0f));
+            m.playAll();
+            auto y = runMixer (m, 9600, {});
+            line ("- Trim -6 dB with the fader at +12 dB: measured " + juce::String (dbOf (rmsOf (y, 4800, 9600)), 2) + " dB (expected +6.00).");
+        }
+
+        // A CC on fader A: a slow 7-bit sweep from 127 down to 0 over 2 s.
+        {
+            Mixer m;
+            m.prepare (rate, 64);
+            m.deck (0).setSource (src);
+            MidiMapping map;
+            map.row = 0; map.cc = 20; map.target.kind = MidiTarget::Kind::fader; map.target.deck = 0;
+            m.getMidi().setMappings ({ map });
+            m.getCcTable().set (1, 20, 127);   // a value from before: not a move
+            m.playAll();
+            int lastCc = 127;
+            auto y = runMixer (m, 96000, [&] (int pos)
+            {
+                const int cc = juce::jlimit (0, 127, 127 - (int) (127.0 * pos / 86000.0));
+                if (cc != lastCc) { m.getCcTable().set (1, 20, cc); lastCc = cc; }
+            });
+            // Zipper steps show as a bend that a smooth sine cannot make: the second difference
+            // of the output, relative to the sine's own at the level of that moment (1.0 = smooth).
+            const double curvature = std::pow (2.0 * std::sin (pi * 1000.0 / rate), 2.0);
+            double worst = 0.0;
+            size_t worstAt = 0;
+            for (size_t i = 48; i + 48 < y.size(); ++i)
+            {
+                double env = 0.0;
+                for (size_t k = i - 24; k < i + 24; ++k) env = std::max (env, (double) std::abs (y[k]));
+                if (env < 1.0e-3) continue;
+                const double bend = std::abs ((double) y[i] - 2.0 * y[i - 1] + y[i - 2]) / (curvature * env);
+                if (bend > worst) { worst = bend; worstAt = i; }
+            }
+            line ("- A CC sweeping fader A from 127 to 0 over 1.8 s (7-bit, 20 ms smoothing; the 1 s file loops as a whole meanwhile): level " + juce::String (dbOf (rmsOf (y, 1000, 4000)), 1)
+                  + " dB at the start, " + juce::String (dbOf (rmsOf (y, 47000, 49000)), 1) + " dB halfway, silent at the end: "
+                  + (rmsOf (y, 95000, 96000) < 1.0e-6 ? "yes" : "no") + ". Largest bend in the output, relative to the sine's own at that level: "
+                  + juce::String (worst, 2) + (worst < 1.15 ? " (smooth: no zipper steps)." : " (STEPS)."));
+        }
+
+        // 14-bit: CC 7 (coarse) + CC 39 (fine).
+        {
+            Mixer m;
+            m.prepare (rate, 64);
+            MidiMapping map;
+            map.row = 0; map.cc = 7; map.fine = true; map.target.kind = MidiTarget::Kind::fader; map.target.deck = 1;
+            m.getMidi().setMappings ({ map });
+            float* outs[2];
+            std::vector<float> l (64), r (64);
+            outs[0] = l.data(); outs[1] = r.data();
+            m.process (outs, 2, 64);
+            m.getCcTable().set (1, 7, 101);
+            m.getCcTable().set (1, 39, 77);
+            m.process (outs, 2, 64);
+            const float expected = (float) ((101 << 7) | 77) / 16383.0f;
+            line ("- 14-bit (CC 7 + CC 39 = 101, 77): fader B at position " + juce::String (m.getFaderPosition (1), 5) + " (expected "
+                  + juce::String (expected, 5) + ", " + juce::String (Mixer::faderPositionToDb (expected), 2) + " dB).");
+        }
+
+        // One CC crossfading A and B: B's mapping has a reversed range.
+        {
+            Mixer m;
+            m.prepare (rate, 64);
+            MidiMapping a, b;
+            a.row = 0; a.cc = 21; a.target.kind = MidiTarget::Kind::fader; a.target.deck = 0;
+            b = a; b.row = 1; b.target.deck = 1; b.outLow = 1.0f; b.outHigh = 0.0f;
+            m.getMidi().setMappings ({ a, b });
+            std::vector<float> l (64), r (64);
+            float* outs[2] = { l.data(), r.data() };
+            m.process (outs, 2, 64);
+            juce::String row;
+            for (int cc : { 0, 64, 127 })
+            {
+                m.getCcTable().set (1, 21, cc);
+                m.process (outs, 2, 64);
+                row << "CC " << cc << ": A " << juce::String (Mixer::faderPositionToDb (m.getFaderPosition (0)), 1)
+                    << " dB, B " << juce::String (Mixer::faderPositionToDb (m.getFaderPosition (1)), 1) << " dB; ";
+            }
+            line ("- One CC on faders A and B, B reversed (a crossfade): " + row.dropLastCharacters (2).replace ("-100.0", "silence") + ".");
+        }
+
+        // Pickup: the fader was moved with the mouse to 0 dB (0.8); the controller sits at 20 and must pass 0.8 to take over.
+        {
+            Mixer m;
+            m.prepare (rate, 64);
+            MidiMapping map;
+            map.row = 0; map.cc = 22; map.pickup = true; map.target.kind = MidiTarget::Kind::fader; map.target.deck = 2;
+            m.getMidi().setMappings ({ map });
+            std::vector<float> l (64), r (64);
+            float* outs[2] = { l.data(), r.data() };
+            m.process (outs, 2, 64);
+            m.setFaderPosition (2, 0.8f);
+            juce::String row;
+            for (int cc : { 20, 60, 110, 90, 40 })
+            {
+                m.getCcTable().set (1, 22, cc);
+                m.process (outs, 2, 64);
+                row << cc << " -> " << juce::String (m.getFaderPosition (2), 3) << (m.getMidi().isWaiting (0) ? " (waiting)" : "") << "; ";
+            }
+            line ("- Pickup, fader C at 0.800 after a mouse move, controller moving 20, 60, 110, 90, 40 (positions as CC/127): "
+                  + row.dropLastCharacters (2) + ". It ignores the controller until it passes 0.8, then follows.");
+        }
         line ("");
     }
 
